@@ -13,7 +13,8 @@ export default {
       return fetch(request);
     }
 
-    url.pathname = url.pathname.slice(publicPathPrefix.length) || "/";
+    const assetPath = url.pathname.slice(publicPathPrefix.length) || "/";
+    url.pathname = assetPath === "/" ? "/index.html" : assetPath;
     return env.ASSETS.fetch(new Request(url.toString(), request));
   }
 };
