@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+# Add the production Sitemap URL after the public domain is confirmed.

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f6fb">
+  <meta name="description" content="Iriz privacy policy: what the macOS app observes, what stays local and what may be sent to OpenAI.">
+  <title>Privacy Policy — Iriz</title>
+  <link rel="icon" href="assets/iriz-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="light-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header compact" data-header>
+    <div class="nav-shell">
+      <a class="brand" href="index.html" aria-label="Iriz home"><img src="assets/iriz-icon.png" alt="" width="36" height="36"><span>Iriz</span></a>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="main-navigation" data-menu-button><span class="sr-only">Open navigation</span><span></span><span></span></button>
+      <nav class="main-nav" id="main-navigation" aria-label="Main navigation" data-navigation><a href="index.html#how-it-works">How it works</a><a href="privacy.html" aria-current="page">Privacy</a><a href="support.html">Support</a><a href="https://github.com/daviddemri26/iriz" rel="noreferrer">GitHub</a><a class="nav-cta" href="press.html">Press kit</a></nav>
+    </div>
+  </header>
+  <main id="main" class="legal-shell">
+    <div class="legal-hero">
+      <span class="kicker">Privacy Policy</span>
+      <h1>Clear boundaries.<br>Plain English.</h1>
+      <p>This policy explains how the Iriz macOS application and this static website handle information.</p>
+      <div class="policy-date">Last updated: August 2, 2026</div>
+    </div>
+    <aside class="legal-summary" aria-label="Privacy summary">
+      <div><span>01</span><p><b>Local by default</b>Your journal, search index and raw media live on your Mac.</p></div>
+      <div><span>02</span><p><b>No Iriz account</b>The current app has no developer-operated cloud account or analytics service.</p></div>
+      <div><span>03</span><p><b>You choose access</b>Observation and audio depend on macOS permissions and in-app controls.</p></div>
+    </aside>
+    <article class="legal-content">
+      <section id="scope"><h2>1. Scope</h2><p>This Privacy Policy applies to the Iriz application for macOS (the “App”) and the Iriz marketing website (the “Website”). Iriz is a local-first contextual memory: it can observe meaningful changes on the active screen, optionally process audio, and organize useful events and commitments into a searchable journal.</p><p>This policy describes the current product implementation. Distribution platforms may process purchase, download, update or diagnostic information under their own terms and privacy policies.</p></section>
+      <section id="local-data"><h2>2. Information stored on your Mac</h2><p>Depending on the features and permissions you enable, Iriz may process and store:</p><ul><li>screen observations, including screenshots, visible text found through OCR, active application name, window title and browser URL;</li><li>microphone audio and, during recognized meetings, system audio;</li><li>journal entries, summaries, entities, URLs, timestamps and confidence information;</li><li>commitments and follow-up states;</li><li>your settings, exclusions and retention choices; and</li><li>an optional short voice reference used to identify you as “You” in diarized meeting transcripts.</li></ul><p>The journal and full-text search database are maintained locally and serialized to an AES-GCM encrypted file. Raw screenshot and audio files are encrypted locally and expire automatically after 24 hours. Encryption keys, your OpenAI API key and any optional voice reference are stored in macOS Keychain.</p></section>
+      <section id="never-captured"><h2>3. Information Iriz does not capture</h2><p>Iriz does not capture keystrokes, clipboard contents or camera video. It pauses when the Mac is locked, excludes its own interface and known password managers, and avoids secure text fields and recognized authentication windows. You can add excluded applications, domains and window-title keywords.</p></section>
+      <section id="openai"><h2>4. Information sent to OpenAI</h2><p>AI features require an OpenAI API key that you provide. The key is stored in macOS Keychain, and requests are sent directly from your Mac to OpenAI. Depending on the feature you use, a request may include a relevant screenshot, OCR text, application or URL context, an audio segment, a question, or a limited set of locally selected journal entries.</p><p>Iriz sends <code>store: false</code> with Responses API analysis requests and does not intentionally create server-side conversation history. OpenAI states that API inputs and outputs are not used to train its models by default unless the API customer opts in. OpenAI may still retain abuse-monitoring logs, including customer content, for up to 30 days by default, unless the API organization has approved data controls. Audio transcription is governed by OpenAI’s API data controls as well.</p><p>Your use of OpenAI is also subject to the terms, privacy policy and data controls associated with your OpenAI API account. Review <a href="https://platform.openai.com/docs/models/default-usage-policies-by-endpoint" rel="noreferrer">OpenAI’s API data controls</a> before enabling AI features.</p></section>
+      <section id="developer"><h2>5. Information sent to the Iriz developer</h2><p>The current App does not require an Iriz account and does not include developer-operated analytics, advertising, tracking or crash-reporting services. The Iriz developer does not receive your journal, screenshots, audio, API key or queries through the App.</p><p>If you contact support, the information you choose to include in your message is used to respond to your request. Do not send private journal content, screenshots, audio or API keys unless support specifically asks for a safe diagnostic item.</p></section>
+      <section id="website"><h2>6. Website data</h2><p>This Website is static and does not use cookies, analytics, advertising pixels, forms or user accounts in its current version. The hosting provider may process ordinary request information such as IP address, browser type, requested page, timestamp and security events to deliver and protect the Website. That processing is governed by the hosting provider’s terms and configuration.</p></section>
+      <section id="controls"><h2>7. Your controls and choices</h2><p>You can control Iriz at any time by:</p><ul><li>pausing or resuming observation;</li><li>enabling or disabling screen and audio features;</li><li>revoking Screen Recording, Accessibility, Microphone or Notification permission in macOS System Settings;</li><li>adding excluded applications, domains or window-title keywords;</li><li>changing structured-data retention;</li><li>removing your OpenAI API key or optional voice reference;</li><li>deleting individual journal events; or</li><li>deleting the App and its local data from your Mac.</li></ul><p>Exports are created only when you request them. JSON and Markdown exports are not encrypted and may contain private journal details and URLs; raw screenshots, raw audio and API keys are excluded.</p></section>
+      <section id="retention"><h2>8. Retention and deletion</h2><p>Encrypted raw screenshots and audio expire after 24 hours. Structured journal data is kept according to the retention setting you choose. Removing an item or clearing local application data deletes it from the App’s local store. Information already transmitted to OpenAI is subject to OpenAI’s retention and deletion practices and any data controls configured for your API organization.</p></section>
+      <section id="audio"><h2>9. Audio and participant notice</h2><p>Audio capture is optional. Laws governing recording and transcription vary by location. You are responsible for obtaining any required consent, informing meeting participants when appropriate, and using audio features in compliance with applicable law and workplace policy.</p></section>
+      <section id="children"><h2>10. Children</h2><p>Iriz is a professional productivity tool and is not directed to children. Do not use the App to intentionally collect information from children where doing so would violate applicable law.</p></section>
+      <section id="security"><h2>11. Security</h2><p>Iriz uses native macOS security features, local AES-GCM encryption, macOS Keychain and file-protection options to reduce risk. No method of storage or transmission is completely secure. Keep your Mac account, OpenAI API key and unencrypted exports protected.</p></section>
+      <section id="changes"><h2>12. Changes to this policy</h2><p>This policy may be updated when Iriz features, distribution methods or service providers change. The “Last updated” date above will identify the latest version. Material changes should be reviewed before you continue using a new App version.</p></section>
+      <section id="contact"><h2>13. Contact</h2><p>For privacy questions or support, use the contact method provided on the <a href="support.html">Support page</a> or by the store or distribution channel from which you obtained Iriz.</p></section>
+      <div class="legal-note"><b>Distribution note</b><p>This policy is a product-facing draft based on the current implementation. The final publisher identity, contact details, hosting configuration and App Store privacy disclosures should be reviewed before public release.</p></div>
+    </article>
+  </main>
+  <footer class="site-footer legal-footer"><div class="section-shell footer-simple"><a class="brand" href="index.html"><img src="assets/iriz-icon.png" alt="" width="30" height="30"><span>Iriz</span></a><div><a href="privacy.html">Privacy</a><a href="support.html">Support</a><a href="press.html">Press kit</a><a href="https://github.com/daviddemri26/iriz" rel="noreferrer">GitHub</a></div><p>© <span data-year>2026</span> Iriz.</p></div></footer>
+  <script src="script.js"></script>
+</body>
+</html>

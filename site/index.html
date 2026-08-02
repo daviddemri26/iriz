@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#090b22">
+  <meta name="description" content="Iriz is a private, local-first memory for macOS that turns meaningful work into a searchable journal and useful follow-ups.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Iriz — Remember what you actually did">
+  <meta property="og:description" content="A private, searchable memory for the work that matters.">
+  <meta property="og:image" content="assets/iriz-social-card.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Iriz — Remember what you actually did">
+  <meta name="twitter:description" content="A private, searchable memory for the work that matters.">
+  <meta name="twitter:image" content="assets/iriz-social-card.png">
+  <title>Iriz — Remember what you actually did</title>
+  <link rel="icon" href="assets/iriz-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header" data-header>
+    <div class="nav-shell">
+      <a class="brand" href="index.html" aria-label="Iriz home">
+        <img src="assets/iriz-icon.png" alt="" width="36" height="36">
+        <span>Iriz</span>
+      </a>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="main-navigation" data-menu-button>
+        <span class="sr-only">Open navigation</span>
+        <span></span><span></span>
+      </button>
+      <nav class="main-nav" id="main-navigation" aria-label="Main navigation" data-navigation>
+        <a href="#how-it-works">How it works</a>
+        <a href="#privacy">Privacy</a>
+        <a href="#technology">Technology</a>
+        <a href="support.html">Support</a>
+        <a href="https://github.com/daviddemri26/iriz" rel="noreferrer">GitHub</a>
+        <a class="nav-cta" href="press.html">Press kit</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero section-shell">
+      <div class="hero-copy reveal">
+        <div class="eyebrow"><span class="status-dot"></span> Native memory for macOS</div>
+        <h1>Remember what you<br><span>actually did.</span></h1>
+        <p class="hero-lede">Iriz turns the meaningful moments across your day into a private, searchable journal — then brings back the decisions, purchases, applications and promises worth remembering.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#how-it-works">See how Iriz works</a>
+          <a class="button button-secondary" href="privacy.html">Read the privacy policy</a>
+        </div>
+        <div class="hero-facts" aria-label="Key product facts">
+          <span>macOS 15+</span>
+          <span>Local-first</span>
+          <span>Your API key</span>
+        </div>
+      </div>
+
+      <div class="product-stage reveal" aria-label="Representative Iriz Journal interface">
+        <div class="aura aura-one"></div>
+        <div class="aura aura-two"></div>
+        <div class="app-window">
+          <div class="window-bar">
+            <div class="traffic-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+            <span>Iriz</span>
+            <div class="capture-state"><i></i> Observing</div>
+          </div>
+          <div class="app-body">
+            <aside class="app-sidebar">
+              <div class="app-brand"><img src="assets/iriz-icon.png" alt="" width="30" height="30"><b>Iriz</b></div>
+              <div class="side-item active"><span>✦</span> Journal</div>
+              <div class="side-item"><span>✓</span> Follow Up <em>3</em></div>
+              <div class="side-item"><span>⌕</span> Ask Iriz</div>
+              <div class="side-item"><span>⚙</span> Settings</div>
+              <div class="pause-card"><i></i><b>Iriz is active</b><small>Meaningful changes only</small></div>
+            </aside>
+            <div class="app-content">
+              <div class="app-title-row">
+                <div><h2>Journal</h2><p>What mattered, without the noise.</p></div>
+                <div class="search-pill">⌕ Search your memory</div>
+              </div>
+              <article class="event-card highlight">
+                <div class="event-icon">✓</div>
+                <div><div class="event-meta">DECISION · 10:42 AM</div><h3>Approved the final launch direction</h3><p>Selected the privacy-first positioning and confirmed the release checklist.</p><div class="tags"><span>Product</span><span>Launch</span></div></div>
+                <strong>Completed</strong>
+              </article>
+              <article class="event-card">
+                <div class="event-icon coral">↗</div>
+                <div><div class="event-meta">COMMITMENT · 9:18 AM</div><h3>Send the revised proposal on Thursday</h3><p>The delivery date and next action were captured from the conversation.</p></div>
+                <strong class="attention">Follow up</strong>
+              </article>
+              <article class="event-card muted-card">
+                <div class="event-icon mint">⌁</div>
+                <div><div class="event-meta">PURCHASE · YESTERDAY</div><h3>Confirmed annual software renewal</h3></div>
+                <strong>Observed</strong>
+              </article>
+            </div>
+          </div>
+        </div>
+        <div class="floating-capsule"><span class="status-dot"></span><b>Iriz</b><small>Ready when memory is not</small><kbd>⌘ K</kbd></div>
+      </div>
+    </section>
+
+    <section class="trust-strip" aria-label="Product principles">
+      <div class="section-shell trust-grid">
+        <div><strong>Quiet by design</strong><span>Routine activity stays out of the way.</span></div>
+        <div><strong>Useful by default</strong><span>Decisions and loose ends rise to the top.</span></div>
+        <div><strong>Private at the core</strong><span>Your journal is encrypted on your Mac.</span></div>
+      </div>
+    </section>
+
+    <section class="section-shell section" id="how-it-works">
+      <div class="section-heading reveal">
+        <span class="kicker">How it works</span>
+        <h2>A memory layer for the work between the apps.</h2>
+        <p>Notes only help when you remember to take them. Iriz notices the context around your real work, filters out the ordinary and preserves the moments you will want later.</p>
+      </div>
+      <div class="steps-grid">
+        <article class="step-card reveal"><span class="step-number">01</span><div class="step-visual observe"><i></i><i></i><i></i></div><h3>Observe meaningful change</h3><p>Iriz uses native macOS permissions to notice meaningful screen changes and, when enabled, spoken moments and meetings.</p></article>
+        <article class="step-card reveal"><span class="step-number">02</span><div class="step-visual filter"><i></i><i></i><i></i><i></i></div><h3>Keep the signal</h3><p>Local filtering suppresses repetition. AI interpretation turns relevant evidence into clean events instead of a noisy activity log.</p></article>
+        <article class="step-card reveal"><span class="step-number">03</span><div class="step-visual recall"><i></i><i></i><i></i></div><h3>Recall and act</h3><p>Search the Journal, ask a question with citations, or move commitments through Follow Up until the loose end is closed.</p></article>
+      </div>
+    </section>
+
+    <section class="section product-section">
+      <div class="section-shell">
+        <div class="section-heading split reveal">
+          <div><span class="kicker">One source of continuity</span><h2>Your day, made retrievable.</h2></div>
+          <p>Iriz is designed for people whose work moves across conversations, browser tabs, documents and decisions faster than a manual note-taking system can follow.</p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card feature-large reveal">
+            <div class="feature-copy"><span class="feature-icon">✦</span><h3>Journal</h3><p>A clean timeline of actions, decisions, appointments, purchases and other useful moments — with routine app activity kept quiet.</p></div>
+            <div class="mini-journal">
+              <div><span class="mini-dot violet"></span><p><b>Client approved the revised scope</b><small>Decision · 2:24 PM</small></p><em>Completed</em></div>
+              <div><span class="mini-dot coral"></span><p><b>Application submitted to Northstar</b><small>Application · 11:07 AM</small></p><em>Observed</em></div>
+              <div><span class="mini-dot mint"></span><p><b>Dental appointment confirmed</b><small>Appointment · Yesterday</small></p><em>Completed</em></div>
+            </div>
+          </article>
+          <article class="feature-card reveal"><span class="feature-icon coral-bg">✓</span><h3>Follow Up</h3><p>Promises and useful loose ends become a manageable queue. Mark them done, snooze them, or move them to waiting.</p><div class="follow-row"><i></i><span>Send revised brief</span><b>Tomorrow</b></div><div class="follow-row"><i></i><span>Check renewal status</span><b>Next week</b></div></article>
+          <article class="feature-card reveal"><span class="feature-icon mint-bg">⌕</span><h3>Ask Iriz</h3><p>Ask a natural question without sending your full history. Iriz searches locally first and returns answers tied to the relevant journal entries.</p><div class="ask-bubble">What did I promise to follow up on?</div><div class="answer-bubble"><span>3 relevant moments</span>Your revised proposal is due Thursday.</div></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-shell section privacy-section" id="privacy">
+      <div class="privacy-visual reveal" aria-hidden="true">
+        <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
+        <div class="privacy-core"><img src="assets/iriz-icon.png" alt="" width="84" height="84"><div><b>Encrypted locally</b><span>Journal · Search · Media</span></div></div>
+        <div class="privacy-chip chip-one">No keystrokes</div><div class="privacy-chip chip-two">No clipboard</div><div class="privacy-chip chip-three">No camera</div><div class="privacy-chip chip-four">No ad tracking</div>
+      </div>
+      <div class="privacy-copy reveal">
+        <span class="kicker">Local first, by design</span>
+        <h2>Your memory should belong to you.</h2>
+        <p>Iriz is built around clear boundaries, local encryption and deliberate controls. There is no Iriz cloud account, ad network or analytics pipeline in the current app.</p>
+        <ul class="check-list">
+          <li><i>✓</i><span><b>Encrypted on your Mac.</b> The journal and search index are protected with AES-GCM; encryption keys live in macOS Keychain.</span></li>
+          <li><i>✓</i><span><b>Raw evidence expires.</b> Screenshots and audio are encrypted locally and automatically removed after 24 hours.</span></li>
+          <li><i>✓</i><span><b>You choose the boundaries.</b> Pause instantly, manage permissions and exclude apps, domains or window titles.</span></li>
+          <li><i>✓</i><span><b>Sensitive inputs stay out.</b> Iriz never captures keystrokes, clipboard contents or camera video.</span></li>
+        </ul>
+        <a class="text-link" href="privacy.html">Read the complete privacy policy <span>→</span></a>
+      </div>
+    </section>
+
+    <section class="section technical-section" id="technology">
+      <div class="section-shell technical-grid">
+        <div class="section-heading reveal"><span class="kicker light">Under the hood</span><h2>Native, focused and technically honest.</h2><p>Iriz uses modern macOS frameworks and keeps its architecture compact. There is no browser wrapper and no required third-party runtime.</p></div>
+        <div class="tech-list reveal">
+          <div><span>01</span><p><b>SwiftUI + AppKit</b><small>A native macOS interface and lightweight floating capsule.</small></p></div>
+          <div><span>02</span><p><b>ScreenCaptureKit + Vision</b><small>Efficient capture, local frame comparison and on-device OCR.</small></p></div>
+          <div><span>03</span><p><b>SQLite FTS5 + AES-GCM</b><small>Fast local search inside an encrypted journal store.</small></p></div>
+          <div><span>04</span><p><b>Direct OpenAI API</b><small>Your API key stays in Keychain; relevant requests go from your Mac to OpenAI.</small></p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-shell section value-section">
+      <div class="section-heading centered reveal"><span class="kicker">Why Iriz</span><h2>Spend less energy reconstructing your own work.</h2><p>Iriz creates practical continuity for independent professionals, founders, operators and client-facing teams.</p></div>
+      <div class="value-grid">
+        <article class="reveal"><span>↺</span><h3>Recover context faster</h3><p>Return to a project after hours or weeks without rebuilding the entire story from scattered tabs and messages.</p></article>
+        <article class="reveal"><span>✓</span><h3>Close more loose ends</h3><p>Keep promises, follow-ups and implicit commitments visible before they disappear into the pace of the day.</p></article>
+        <article class="reveal"><span>⌕</span><h3>Search lived work</h3><p>Find the company, document, appointment or decision even when you cannot remember where it happened.</p></article>
+        <article class="reveal"><span>◉</span><h3>Keep control</h3><p>Use granular permissions, exclusions, retention settings and one-click pause whenever context should stay private.</p></article>
+      </div>
+    </section>
+
+    <section class="section-shell closing-section reveal">
+      <img src="assets/iriz-icon.png" alt="Iriz app icon" width="112" height="112">
+      <div><span class="kicker">Coming to macOS</span><h2>A calmer way to remember.</h2><p>Iriz is currently being prepared for release. Explore the press kit for product details, approved copy and brand assets.</p></div>
+      <a class="button button-primary" href="press.html">Open the press kit</a>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="section-shell footer-grid">
+      <div><a class="brand" href="index.html"><img src="assets/iriz-icon.png" alt="" width="32" height="32"><span>Iriz</span></a><p>A private, searchable memory for the work that matters.</p></div>
+      <div><b>Product</b><a href="#how-it-works">How it works</a><a href="#technology">Technology</a><a href="press.html">Press kit</a></div>
+      <div><b>Resources</b><a href="privacy.html">Privacy</a><a href="support.html">Support</a><a href="https://github.com/daviddemri26/iriz" rel="noreferrer">GitHub</a></div>
+      <div class="footer-note"><p>Designed for macOS 15 and later.</p><p>© <span data-year>2026</span> Iriz.</p></div>
+    </div>
+  </footer>
+  <script src="script.js"></script>
+</body>
+</html>
