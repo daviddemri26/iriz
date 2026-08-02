@@ -39,12 +39,34 @@ Run from Xcode by opening `Package.swift`, or use `swift run Iriz`.
 
 The script builds a Universal `arm64`/`x86_64` `build/Iriz.app`, applies an ad-hoc signature when no Developer ID identity is supplied, validates the bundle, and creates `build/Iriz.zip`.
 
+### Developer ID release candidate
+
+Use the real Developer ID Application identity to test macOS permissions and upgrades before public distribution. Xcode must be signed in to the Apple Developer team and the certificate must be present in the login Keychain.
+
+```sh
+CODE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+./Scripts/package_release_candidate.sh
+./Scripts/install_release_candidate.sh  # installs /Applications/Iriz.app
+```
+
+Always launch `/Applications/Iriz.app` for permission acceptance. Do not alternate with `.build`, `swift run`, or `build/Iriz.app`, because TCC evaluates the signed application identity and path. The installer preserves an existing app in `build/previous-installations/` before replacement and refuses an update if the designated code requirement changes.
+
+The critical local acceptance sequence is:
+
+1. Grant Screen Recording, Microphone, Accessibility and Notifications from Iriz Settings.
+2. Relaunch `/Applications/Iriz.app` and verify every status is retained.
+3. Package and install another build using the same Developer ID identity.
+4. Verify the permissions remain granted after the update.
+5. Exercise Observe, Listen, Pause, exclusions, screen lock and the floating panel without repeated prompts.
+
+This validates the real Developer ID and TCC lifecycle. A public build additionally requires Apple notarization and a successful Gatekeeper assessment.
+
 For direct release distribution, first save notary credentials with `notarytool`, then run:
 
 ```sh
 CODE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 NOTARY_PROFILE="iriz-notary" \
-./Scripts/package_app.sh
+./Scripts/package_public_release.sh
 ```
 
 The script then timestamps the Developer ID signature, submits the ZIP to Apple, waits for notarization, staples the ticket to the app, and recreates the archive.

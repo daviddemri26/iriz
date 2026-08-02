@@ -1,5 +1,14 @@
 import SwiftUI
 
+private enum SettingsCategory: String, CaseIterable, Identifiable {
+    case capture = "Capture"
+    case intelligence = "AI & Language"
+    case journal = "Journal"
+    case privacy = "Privacy"
+
+    var id: String { rawValue }
+}
+
 struct SettingsView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var settings: SettingsStore
@@ -12,25 +21,38 @@ struct SettingsView: View {
     @State private var excludedWindowKeywords = ""
     @State private var message: String?
     @State private var pendingExport: ExportFormat?
+    @State private var selectedCategory: SettingsCategory = .capture
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Settings").font(.largeTitle.weight(.bold))
                     Text("Iriz is local first. You decide what it can observe and what leaves your Mac.")
                         .foregroundStyle(.secondary)
                 }
-                if app.secureStorageState != .ready { secureStorageSection }
-                apiSection
-                captureSection
-                languageAndRetention
-                permissionsSection
-                privacySection
+                Picker("Settings category", selection: $selectedCategory) {
+                    ForEach(SettingsCategory.allCases) { category in
+                        Text(category.rawValue).tag(category)
+                    }
+                }
+                .pickerStyle(.segmented)
             }
-            .padding(24)
-            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 18)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 26) {
+                    if app.secureStorageState != .ready { secureStorageSection }
+                    selectedCategoryContent
+                }
+                .padding(24)
+                .frame(maxWidth: 760, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             excludedDomains = settings.settings.excludedDomains.sorted().joined(separator: ", ")
             excludedApplications = settings.settings.excludedBundleIdentifiers
@@ -39,6 +61,9 @@ struct SettingsView: View {
             excludedWindowKeywords = (UserDefaults.standard.stringArray(forKey: "iriz.excludedWindowKeywords") ?? []).joined(separator: ", ")
         }
         .task { await permissionMonitor.monitor() }
+        .onChange(of: settings.settings.audioSchedule) { _, _ in
+            app.configureAudio()
+        }
         .onExitCommand {
             if isChoosingLanguage {
                 withAnimation(.snappy(duration: 0.2)) { isChoosingLanguage = false }
@@ -55,6 +80,24 @@ struct SettingsView: View {
             }
         } message: {
             Text("The export can contain private event details and URLs. Raw screenshots, audio and API keys are never included.")
+        }
+    }
+
+    @ViewBuilder private var selectedCategoryContent: some View {
+        switch selectedCategory {
+        case .capture:
+            captureSection
+            statusLegendSection
+        case .intelligence:
+            apiSection
+            followUpSensitivitySection
+            languageSection
+        case .journal:
+            journalSection
+        case .privacy:
+            permissionsSection
+            exclusionsSection
+            privacySection
         }
     }
 
@@ -80,7 +123,7 @@ struct SettingsView: View {
             if let error = app.storageError {
                 Text(error).font(.caption).foregroundStyle(.secondary)
             }
-            Text("Local development rebuilds use an ad hoc signature, so macOS may ask again. Release builds use one stable Developer ID identity.")
+            Text(DistributionEnvironment.permissionTestingDescription)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -116,6 +159,12 @@ struct SettingsView: View {
                 .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || settings.apiKeyState == .testing)
             }
             if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+            Divider()
+            Label("Cost-aware routing is automatic", systemImage: "gauge.with.dots.needle.33percent")
+                .font(.callout.weight(.medium))
+            Text("Luna handles frequent observation classification, Terra is reserved for meaningful memory refinement and answers that need more judgment, and dedicated speech models handle transcription. Model choice is not exposed because each task has a fixed quality and cost budget.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -130,7 +179,7 @@ struct SettingsView: View {
                     .foregroundStyle(settings.settings.isPaused ? Color.secondary : IrizTheme.mint)
                 Text(settings.settings.isPaused
                      ? "Paused — your Observe and Listen choices are preserved for Resume."
-                     : "Active — \(app.observationStatusText).")
+                     : "Current activity — \(app.observationStatusText).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -139,19 +188,21 @@ struct SettingsView: View {
                 }
             }
             Divider()
-            Picker("Listening behavior", selection: Binding(
-                get: { settings.settings.audioMode == .schedule ? AudioMode.schedule : .alwaysOn },
-                set: { app.setListeningBehavior($0) }
+            Picker("When selected channels run", selection: Binding(
+                get: { settings.settings.captureTiming },
+                set: { app.setCaptureTiming($0) }
             )) {
-                Text(AudioMode.alwaysOn.displayName).tag(AudioMode.alwaysOn)
-                Text(AudioMode.schedule.displayName).tag(AudioMode.schedule)
+                ForEach(CaptureTiming.allCases, id: \.self) { timing in
+                    Text(timing.displayName).tag(timing)
+                }
             }
-            .disabled(!app.isListenEnabled)
-            Text(app.isListenEnabled
-                 ? "Always On listens whenever Iriz is active. Schedule listens only during the configured hours."
-                 : "Turn on Listen above to choose when the microphone is active.")
+            .pickerStyle(.segmented)
+            Text("This timing applies to both selected channels. The floating panel changes the same Observe, Listen and Pause state shown here.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if settings.settings.captureTiming == .schedule {
+                ScheduleEditor(schedule: $settings.settings.audioSchedule)
+            }
             Toggle("Recognize meetings in Zoom, Meet and Teams", isOn: $settings.settings.meetingDetectionEnabled)
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -168,27 +219,68 @@ struct SettingsView: View {
                 }
                 .disabled(app.isEnrollingVoice)
             }
-            TextField("Excluded domains, separated by commas", text: $excludedDomains)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(saveExcludedDomains)
-            TextField("Excluded app bundle IDs, separated by commas", text: $excludedApplications)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(saveExcludedDomains)
-            TextField("Excluded window title words, separated by commas", text: $excludedWindowKeywords)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(saveExcludedDomains)
-            HStack {
-                Text("Keyboard input, clipboard and camera are never captured. Password managers and authentication windows are excluded automatically.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Save exclusions", action: saveExcludedDomains)
-            }
         }
     }
 
-    private var languageAndRetention: some View {
+    private var statusLegendSection: some View {
         SettingsGroup(
-            title: "Journal",
+            title: "Live Status Legend",
+            subtitle: "The floating logo and both control cards always show what Iriz is doing right now, not whether Always On or Schedule is selected."
+        ) {
+            VStack(alignment: .leading, spacing: 13) {
+                ForEach(IrizStatusLegend.items) { item in
+                    HStack(alignment: .top, spacing: 11) {
+                        ZStack {
+                            Circle().fill(item.tint.opacity(0.14))
+                            Circle().stroke(item.tint.opacity(item.breathes ? 0.5 : 0.25), lineWidth: 1.2)
+                        }
+                        .frame(width: 20, height: 20)
+                        .padding(.top, 1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 7) {
+                                Text(item.title).font(.callout.weight(.semibold))
+                                if item.breathes {
+                                    Text("GENTLE PULSE")
+                                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                                        .tracking(0.5)
+                                        .foregroundStyle(item.tint)
+                                }
+                            }
+                            Text(item.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            Text("Always On and Schedule decide when the selected channels may run. The live status changes only when the activity happening now changes.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var followUpSensitivitySection: some View {
+        SettingsGroup(
+            title: "Follow Up Sensitivity",
+            subtitle: "Choose how selective Iriz should be when it notices commitments and useful next actions."
+        ) {
+            Picker("Sensitivity", selection: $settings.settings.followUpSensitivity) {
+                ForEach(FollowUpSensitivity.allCases) { level in
+                    Text(level.displayName).tag(level)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text(settings.settings.followUpSensitivity.explanation)
+                .font(.callout)
+            Text("The setting guides future AI extraction and immediately filters the current Follow Up view. Hidden items are kept locally and reappear if you choose a more detailed level.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var languageSection: some View {
+        SettingsGroup(
+            title: "Language",
             subtitle: "The interface stays in American English. This language guides journal writing and helps Iriz understand meetings and voice sessions."
         ) {
             VStack(alignment: .leading, spacing: 10) {
@@ -212,6 +304,14 @@ struct SettingsView: View {
                 }
                 if isChoosingLanguage { inlineLanguagePicker }
             }
+        }
+    }
+
+    private var journalSection: some View {
+        SettingsGroup(
+            title: "Journal & Retention",
+            subtitle: "Choose how long useful structured memories remain and when Iriz gives you a quiet recap."
+        ) {
             Picker("Keep events and useful transcripts", selection: $settings.settings.structuredRetention) {
                 ForEach(StructuredRetention.allCases, id: \.self) { Text($0.displayName).tag($0) }
             }
@@ -243,16 +343,42 @@ struct SettingsView: View {
         }
     }
 
+    private var exclusionsSection: some View {
+        SettingsGroup(
+            title: "Never observe",
+            subtitle: "Built-in password manager and authentication exclusions are always active. Add your own boundaries here."
+        ) {
+            TextField("Excluded domains, separated by commas", text: $excludedDomains)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(saveExcludedDomains)
+            TextField("Excluded app bundle IDs, separated by commas", text: $excludedApplications)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(saveExcludedDomains)
+            TextField("Excluded window title words, separated by commas", text: $excludedWindowKeywords)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(saveExcludedDomains)
+            HStack {
+                Text("Keyboard input, clipboard and camera are never captured.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Save exclusions", action: saveExcludedDomains)
+            }
+        }
+    }
+
     private var permissionsSection: some View {
         SettingsGroup(title: "Permissions", subtitle: "Each permission is separate and can be changed in System Settings.") {
-            if DistributionEnvironment.isAdHocBuild {
-                Label {
-                    Text("Development build: macOS can treat each ad hoc rebuild as a different app. Final permission acceptance will use one Developer ID-signed build installed in Applications.")
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(DistributionEnvironment.buildChannel.displayName)
+                        .font(.caption.weight(.semibold))
+                    Text(DistributionEnvironment.permissionTestingDescription)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                } icon: {
-                    Image(systemName: "hammer.fill").foregroundStyle(.orange)
                 }
+            } icon: {
+                Image(systemName: DistributionEnvironment.isAdHocBuild ? "hammer.fill" : "checkmark.seal.fill")
+                    .foregroundStyle(DistributionEnvironment.isAdHocBuild ? Color.orange : IrizTheme.mint)
             }
             PermissionRow(
                 title: "Screen Recording",
@@ -381,6 +507,60 @@ struct SettingsView: View {
         }.filter { !$0.isEmpty }
         UserDefaults.standard.set(windowKeywords, forKey: "iriz.excludedWindowKeywords")
         message = "Exclusions saved."
+    }
+}
+
+private struct ScheduleEditor: View {
+    @Binding var schedule: AudioSchedule
+
+    private let timeOptions = Array(stride(from: 0, through: 23 * 60 + 30, by: 30))
+    private let weekdays: [(value: Int, label: String)] = [
+        (2, "Mon"), (3, "Tue"), (4, "Wed"), (5, "Thu"), (6, "Fri"), (7, "Sat"), (1, "Sun")
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Picker("From", selection: $schedule.startMinutes) {
+                    ForEach(timeOptions, id: \.self) { minutes in
+                        Text(timeLabel(minutes)).tag(minutes)
+                    }
+                }
+                Picker("To", selection: $schedule.endMinutes) {
+                    ForEach(timeOptions, id: \.self) { minutes in
+                        Text(timeLabel(minutes)).tag(minutes)
+                    }
+                }
+            }
+            HStack(spacing: 6) {
+                ForEach(weekdays, id: \.value) { day in
+                    let isSelected = schedule.weekdays.contains(day.value)
+                    Button(day.label) {
+                        if isSelected {
+                            schedule.weekdays.remove(day.value)
+                        } else {
+                            schedule.weekdays.insert(day.value)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(isSelected ? IrizTheme.violet : Color.secondary)
+                    .controlSize(.small)
+                    .accessibilityValue(isSelected ? "Included" : "Excluded")
+                }
+            }
+            Text(schedule.startMinutes > schedule.endMinutes
+                 ? "The schedule continues overnight into the next day."
+                 : "Outside these hours, both selected channels stay ready but capture nothing.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func timeLabel(_ minutes: Int) -> String {
+        let date = Calendar.current.date(from: DateComponents(hour: minutes / 60, minute: minutes % 60))
+        return date?.formatted(date: .omitted, time: .shortened) ?? "\(minutes / 60):\(String(format: "%02d", minutes % 60))"
     }
 }
 

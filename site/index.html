@@ -113,6 +113,22 @@
       </div>
     </section>
 
+    <section class="architecture-intro" aria-labelledby="architecture-title">
+      <div class="section-shell">
+        <div class="architecture-heading reveal">
+          <span class="kicker">Local first, clearly explained</span>
+          <h2 id="architecture-title">Your Mac filters first. OpenAI interprets only what matters.</h2>
+          <p>Iriz does not stream your entire day to the cloud. It detects useful changes on your Mac, sends selected context directly to OpenAI when advanced understanding is needed, and keeps the resulting memory encrypted locally.</p>
+        </div>
+        <div class="architecture-steps">
+          <article class="reveal"><span>01</span><h3>Process on your Mac</h3><p>Screen comparison, silence detection, OCR, exclusions, search and encryption happen locally.</p></article>
+          <article class="reveal"><span>02</span><h3>Interpret selectively</h3><p>Relevant text, audio or a key image may go directly from your Mac to OpenAI using your API key.</p></article>
+          <article class="reveal"><span>03</span><h3>Remember locally</h3><p>Structured events, citations and follow-ups return to your encrypted journal and local search index.</p></article>
+        </div>
+        <p class="architecture-note reveal"><b>Does Iriz run a local generative model?</b> No. Apple’s on-device frameworks handle preprocessing and local search; OpenAI models handle advanced language, image and speech understanding.</p>
+      </div>
+    </section>
+
     <section class="section-shell section" id="how-it-works">
       <div class="section-heading reveal">
         <span class="kicker">How it works</span>
@@ -169,12 +185,20 @@
 
     <section class="section technical-section" id="technology">
       <div class="section-shell technical-grid">
-        <div class="section-heading reveal"><span class="kicker light">Under the hood</span><h2>Native, focused and technically honest.</h2><p>Iriz uses modern macOS frameworks and keeps its architecture compact. There is no browser wrapper and no required third-party runtime.</p></div>
+        <div class="section-heading reveal"><span class="kicker light">Under the hood</span><h2>Native, selective and technically honest.</h2><p>Iriz combines on-device filtering with targeted OpenAI calls. There is no browser wrapper, no Iriz cloud account and no developer-operated server between your Mac and OpenAI.</p></div>
         <div class="tech-list reveal">
-          <div><span>01</span><p><b>SwiftUI + AppKit</b><small>A native macOS interface and lightweight floating capsule.</small></p></div>
-          <div><span>02</span><p><b>ScreenCaptureKit + Vision</b><small>Efficient capture, local frame comparison and on-device OCR.</small></p></div>
-          <div><span>03</span><p><b>SQLite FTS5 + AES-GCM</b><small>Fast local search inside an encrypted journal store.</small></p></div>
-          <div><span>04</span><p><b>Direct OpenAI API</b><small>Your API key stays in Keychain; relevant requests go from your Mac to OpenAI.</small></p></div>
+          <div><span>01</span><p><b>Native observation</b><small>ScreenCaptureKit observes selected screen changes. Microphone and meeting audio remain separate, optional channels.</small></p></div>
+          <div><span>02</span><p><b>On-device filtering</b><small>Apple Vision OCR, local frame comparison, exclusions and voice-activity detection remove repetition and silence before any AI request.</small></p></div>
+          <div><span>03</span><p><b>Cost-aware interpretation</b><small>GPT-5.6 Luna classifies relevant observations. GPT-5.6 Terra is reserved for meaningful refinement and conversational answers.</small></p></div>
+          <div><span>04</span><p><b>Purpose-built transcription</b><small>GPT Transcribe handles simple speech; GPT-4o Transcribe Diarize separates speakers when a conversation needs it.</small></p></div>
+          <div><span>05</span><p><b>Encrypted local memory</b><small>Journal payloads and raw media use AES-GCM encryption. API and encryption keys stay in macOS Keychain.</small></p></div>
+          <div><span>06</span><p><b>Local-first recall</b><small>SQLite FTS5 and Apple NLEmbedding rank local results first. Only a short list of relevant events is used to compose an answer.</small></p></div>
+        </div>
+        <div class="tech-boundary reveal">
+          <div><span>WHEN NOTHING CHANGES</span><strong>Zero AI calls</strong><p>An unchanged screen and silence do not trigger OpenAI.</p></div>
+          <div><span>WHEN AI IS NEEDED</span><strong>Direct, limited requests</strong><p>Selected OCR, transcript, URL context or a key image goes from your Mac to OpenAI with <code>store: false</code>.</p></div>
+          <div><span>WHEN THE NETWORK IS DOWN</span><strong>Encrypted local queue</strong><p>Pending observations remain encrypted locally and can be retried before their 24-hour raw-data expiry.</p></div>
+          <div><span>WHAT NEVER GETS CAPTURED</span><strong>No keys, clipboard or camera</strong><p>Iriz does not record keystrokes, clipboard contents or camera video.</p></div>
         </div>
       </div>
     </section>

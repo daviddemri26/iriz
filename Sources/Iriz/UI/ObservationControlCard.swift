@@ -26,7 +26,7 @@ extension CaptureHealth {
         case .observing:
             IrizStatusAppearance(
                 title: "Iriz is observing",
-                detail: "Ready to remember useful moments.",
+                detail: "The screen is active right now.",
                 symbol: "eye.fill",
                 tint: IrizTheme.mint,
                 badge: "LIVE",
@@ -36,7 +36,7 @@ extension CaptureHealth {
         case .listening:
             IrizStatusAppearance(
                 title: "Iriz is listening",
-                detail: "Listening for useful spoken context.",
+                detail: "The microphone is active right now.",
                 symbol: "waveform",
                 tint: IrizTheme.violet,
                 badge: "LIVE",
@@ -46,20 +46,20 @@ extension CaptureHealth {
         case .observingAndListening:
             IrizStatusAppearance(
                 title: "Iriz is observing and listening",
-                detail: "Screen and spoken context are both active.",
+                detail: "Screen and microphone are active right now.",
                 symbol: "eye.fill",
                 tint: IrizTheme.violet,
                 badge: "LIVE",
                 breathes: true,
                 breathingDuration: 2.2
             )
-        case .scheduled:
+        case .waitingForSchedule:
             IrizStatusAppearance(
-                title: "Listening is scheduled",
-                detail: "The microphone will start during your schedule.",
-                symbol: "calendar",
-                tint: IrizTheme.violet,
-                badge: "READY",
+                title: "Iriz is waiting",
+                detail: "Not observing or listening right now.",
+                symbol: "clock.fill",
+                tint: .secondary,
+                badge: "WAITING",
                 breathes: false,
                 breathingDuration: 2.8
             )
@@ -107,6 +107,60 @@ extension CaptureHealth {
     }
 }
 
+enum ObservationControlMetrics {
+    static let floatingWidth: CGFloat = 264
+    static let cardHeight: CGFloat = 300
+}
+
+struct IrizStatusLegendItem: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let tint: Color
+    let breathes: Bool
+}
+
+@MainActor
+enum IrizStatusLegend {
+    static var items: [IrizStatusLegendItem] {[
+        IrizStatusLegendItem(
+            id: "observe",
+            title: "Mint · Observing",
+            detail: "The screen is being observed now.",
+            tint: IrizTheme.mint,
+            breathes: true
+        ),
+        IrizStatusLegendItem(
+            id: "listen",
+            title: "Violet · Listening or saving",
+            detail: "The microphone is active, both channels are active, or Iriz is saving a useful moment.",
+            tint: IrizTheme.violet,
+            breathes: true
+        ),
+        IrizStatusLegendItem(
+            id: "meeting",
+            title: "Coral · Meeting",
+            detail: "A supported meeting is currently detected.",
+            tint: IrizTheme.coral,
+            breathes: true
+        ),
+        IrizStatusLegendItem(
+            id: "idle",
+            title: "Gray · Paused or waiting",
+            detail: "No screen or microphone capture is happening now.",
+            tint: .secondary,
+            breathes: false
+        ),
+        IrizStatusLegendItem(
+            id: "attention",
+            title: "Orange · Attention needed",
+            detail: "A permission or another issue needs review.",
+            tint: .orange,
+            breathes: false
+        )
+    ]}
+}
+
 struct ObservationChannelsControl: View {
     enum Presentation {
         case compact
@@ -121,7 +175,7 @@ struct ObservationChannelsControl: View {
         HStack(spacing: presentation == .compact ? 6 : 10) {
             channelButton(
                 title: "Observe",
-                detail: "Screen",
+                detail: settings.settings.captureTiming == .schedule ? "Screen · Scheduled" : "Screen",
                 symbol: "eye.fill",
                 tint: IrizTheme.mint,
                 isSelected: app.isObserveEnabled
@@ -130,7 +184,7 @@ struct ObservationChannelsControl: View {
             }
             channelButton(
                 title: "Listen",
-                detail: settings.settings.audioMode == .schedule ? "Mic · Scheduled" : "Microphone",
+                detail: settings.settings.captureTiming == .schedule ? "Mic · Scheduled" : "Microphone",
                 symbol: "waveform",
                 tint: IrizTheme.violet,
                 isSelected: app.isListenEnabled
@@ -210,7 +264,13 @@ struct IrizBreathingLogo: View {
                 : .default,
             value: isBreathing
         )
-        .onAppear { isBreathing = true }
+        .task(id: appearance.title) {
+            isBreathing = false
+            guard appearance.breathes else { return }
+            try? await Task.sleep(for: .milliseconds(40))
+            guard !Task.isCancelled else { return }
+            isBreathing = true
+        }
         .accessibilityLabel("Iriz · \(appearance.title)")
     }
 }
@@ -234,24 +294,18 @@ struct ObservationControlCard: View {
     private var appearance: IrizStatusAppearance { app.captureHealth.irizAppearance }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             draggableHeader
-            statusCopy
-
-            if isAddingNote {
-                noteEditor
-            } else {
-                quickActions
-            }
-
+            navigationActions
+            captureActionSlot
             ObservationChannelsControl(presentation: .compact)
-            pauseButton
+            controlRow
             footer
         }
         .padding(13)
         .frame(
-            width: placement == .floating ? 264 : nil,
-            height: placement == .floating ? 300 : nil,
+            width: placement == .floating ? ObservationControlMetrics.floatingWidth : nil,
+            height: ObservationControlMetrics.cardHeight,
             alignment: .top
         )
         .background {
@@ -283,8 +337,20 @@ struct ObservationControlCard: View {
     }
 
     private var statusHeader: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             StatusGlyph(appearance: appearance)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(appearance.title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                Text(appearance.detail)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.84)
+            }
+            .layoutPriority(1)
             Spacer()
             Text(appearance.badge)
                 .font(.system(size: 8, weight: .bold, design: .rounded))
@@ -294,51 +360,78 @@ struct ObservationControlCard: View {
                 .padding(.vertical, 4)
                 .background(appearance.tint.opacity(0.12), in: Capsule())
         }
+        .frame(height: 48)
     }
 
-    private var statusCopy: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(appearance.title)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.86)
-            Text(appearance.detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var quickActions: some View {
+    private var navigationActions: some View {
         HStack(spacing: 6) {
-            ControlShortcut(title: "Mark", symbol: "bookmark.fill") { Task { await app.markMoment() } }
-            ControlShortcut(title: "Note", symbol: "square.and.pencil") {
-                isAddingNote = true
-                interactionChanged?(true)
-            }
-            ControlShortcut(title: "Ask", symbol: "sparkles") { app.openMainWindow(section: .assistant) }
-            ControlShortcut(title: "Journal", symbol: "clock.arrow.circlepath") { app.openMainWindow(section: .journal) }
+            ControlShortcut(title: "Ask", symbol: "sparkles", tint: IrizTheme.violet) { app.openMainWindow(section: .assistant) }
+            ControlShortcut(title: "Journal", symbol: "clock.arrow.circlepath", tint: IrizTheme.violet) { app.openMainWindow(section: .journal) }
+            ControlShortcut(title: "Follow Up", symbol: "checklist", tint: IrizTheme.violet) { app.openMainWindow(section: .followUp) }
         }
+        .frame(height: 40)
+    }
+
+    @ViewBuilder private var captureActionSlot: some View {
+        Group {
+            if isAddingNote {
+                noteEditor
+            } else {
+                HStack(spacing: 6) {
+                    ControlShortcut(title: "Mark Moment", symbol: "bookmark.fill", tint: IrizTheme.mint) { Task { await app.markMoment() } }
+                    ControlShortcut(title: "Add Note", symbol: "square.and.pencil", tint: .secondary) {
+                        isAddingNote = true
+                        interactionChanged?(true)
+                    }
+                }
+            }
+        }
+        .frame(height: 38)
     }
 
     private var noteEditor: some View {
-        VStack(spacing: 6) {
+        HStack(spacing: 5) {
             TextField("Add a note…", text: $noteText)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit(saveNote)
-            HStack {
-                Button("Cancel") {
-                    isAddingNote = false
-                    interactionChanged?(false)
-                }
-                Spacer()
-                Button("Save", action: saveNote)
-                    .buttonStyle(.borderedProminent)
-                    .tint(IrizTheme.violet)
+            Button {
+                noteText = ""
+                isAddingNote = false
+                interactionChanged?(false)
+            } label: {
+                Image(systemName: "xmark")
+                    .frame(width: 24, height: 24)
             }
-            .controlSize(.small)
+            .buttonStyle(.plain)
+            .help("Cancel")
+            Button(action: saveNote) {
+                Image(systemName: "checkmark")
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(IrizTheme.violet)
+            .disabled(noteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .help("Save note")
         }
+        .controlSize(.small)
+    }
+
+    private var controlRow: some View {
+        HStack(spacing: 6) {
+            pauseButton
+            Button {
+                app.openMainWindow(section: .settings)
+            } label: {
+                Image(systemName: "gearshape.fill")
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 34, height: 34)
+                    .background(Color.primary.opacity(0.065), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
+            .accessibilityLabel("Open Settings")
+        }
+        .frame(height: 34)
     }
 
     private var pauseButton: some View {
@@ -352,9 +445,6 @@ struct ObservationControlCard: View {
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                 Spacer()
-                Text("⇧⌘P")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .opacity(0.72)
             }
             .padding(.horizontal, 11)
             .frame(maxWidth: .infinity, minHeight: 34)
@@ -373,28 +463,29 @@ struct ObservationControlCard: View {
         .accessibilityHint(settings.settings.isPaused ? "Starts observation" : "Stops all observation")
     }
 
-    @ViewBuilder private var footer: some View {
-        if app.pendingCount > 0 || placement == .floating || app.secureStorageState != .ready {
-            HStack(spacing: 6) {
-                if app.pendingCount > 0 {
-                    Image(systemName: "lock.fill")
-                    Text("\(app.pendingCount) waiting")
-                }
-                Spacer()
-                if placement == .floating || app.secureStorageState != .ready {
-                    Button(app.secureStorageState == .ready ? "Settings" : "Review") {
-                        app.openMainWindow(section: .settings)
-                    }
-                        .buttonStyle(.plain)
-                }
+    private var footer: some View {
+        HStack(spacing: 5) {
+            if app.secureStorageState != .ready {
+                Image(systemName: "lock.trianglebadge.exclamationmark")
+                Text("Secure storage needs review")
+                    .lineLimit(1)
+            } else if app.pendingCount > 0 {
+                Image(systemName: "lock.fill")
+                Text("\(app.pendingCount) waiting securely")
+                    .lineLimit(1)
+            } else {
+                Color.clear
             }
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
         }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(app.secureStorageState == .ready ? Color.secondary : Color.orange)
+        .frame(height: 14)
     }
 
     private func saveNote() {
-        let value = noteText
+        let value = noteText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
         noteText = ""
         isAddingNote = false
         interactionChanged?(false)
@@ -423,23 +514,32 @@ private struct StatusGlyph: View {
                 : .default,
             value: isBreathing
         )
-        .onAppear { isBreathing = true }
+        .task(id: appearance.title) {
+            isBreathing = false
+            guard appearance.breathes else { return }
+            try? await Task.sleep(for: .milliseconds(40))
+            guard !Task.isCancelled else { return }
+            isBreathing = true
+        }
     }
 }
 
 private struct ControlShortcut: View {
     let title: String
     let symbol: String
+    let tint: Color
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             VStack(spacing: 3) {
-                Image(systemName: symbol).font(.caption.weight(.semibold))
+                Image(systemName: symbol)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
                 Text(title).font(.system(size: 9, weight: .medium)).lineLimit(1)
             }
             .frame(maxWidth: .infinity, minHeight: 38)
-            .background(Color.primary.opacity(0.065), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background(tint.opacity(0.075), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
         .buttonStyle(.plain)
         .help(title)

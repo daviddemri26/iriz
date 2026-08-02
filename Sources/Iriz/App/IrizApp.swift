@@ -49,6 +49,9 @@ final class IrizAppDelegate: NSObject, NSApplicationDelegate {
         )
         floatingPanel = FloatingPanelController(app: .shared, settings: .shared)
         floatingPanel?.show()
+        DispatchQueue.main.async { [weak self] in
+            self?.showMainWindow()
+        }
     }
 
     deinit {

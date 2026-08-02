@@ -56,7 +56,7 @@ actor ScreenCaptureService {
     }
 
     nonisolated static func shouldAttemptCapture(settings: IrizSettings, permission: PermissionState) -> Bool {
-        !settings.isPaused && settings.screenCaptureEnabled && permission == .granted
+        settings.isScreenCaptureActiveNow && permission == .granted
     }
 
     private func captureOne(settings: IrizSettings, handler: @escaping Handler) async throws {

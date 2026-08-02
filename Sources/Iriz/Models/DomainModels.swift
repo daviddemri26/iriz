@@ -86,6 +86,7 @@ enum EventImportance: Int, Codable, CaseIterable, Comparable, Sendable {
 
 enum CommitmentState: String, Codable, CaseIterable, Sendable {
     case needsAttention
+    case completionSuggested
     case later
     case waiting
     case maybe
@@ -95,6 +96,7 @@ enum CommitmentState: String, Codable, CaseIterable, Sendable {
     var displayName: String {
         switch self {
         case .needsAttention: "Needs attention"
+        case .completionSuggested: "Suggested done"
         case .later: "Later"
         case .waiting: "Waiting"
         case .maybe: "Maybe"
@@ -249,6 +251,7 @@ struct Commitment: Codable, Identifiable, Hashable, Sendable {
     var rationale: String
     var explicitDueAt: Date?
     var suggestedReviewAt: Date?
+    var contextLabel: String?
     var confidence: Double
     var state: CommitmentState
     var linkedEventIDs: [UUID]
@@ -263,6 +266,7 @@ struct Commitment: Codable, Identifiable, Hashable, Sendable {
         rationale: String = "",
         explicitDueAt: Date? = nil,
         suggestedReviewAt: Date? = nil,
+        contextLabel: String? = nil,
         confidence: Double,
         state: CommitmentState,
         linkedEventIDs: [UUID] = [],
@@ -276,11 +280,62 @@ struct Commitment: Codable, Identifiable, Hashable, Sendable {
         self.rationale = rationale
         self.explicitDueAt = explicitDueAt
         self.suggestedReviewAt = suggestedReviewAt
+        self.contextLabel = contextLabel
         self.confidence = min(max(confidence, 0), 1)
         self.state = state
         self.linkedEventIDs = linkedEventIDs
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case eventID
+        case owner
+        case action
+        case rationale
+        case explicitDueAt
+        case suggestedReviewAt
+        case contextLabel
+        case confidence
+        case state
+        case linkedEventIDs
+        case createdAt
+        case updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        eventID = try values.decode(UUID.self, forKey: .eventID)
+        owner = try values.decode(String.self, forKey: .owner)
+        action = try values.decode(String.self, forKey: .action)
+        rationale = try values.decodeIfPresent(String.self, forKey: .rationale) ?? ""
+        explicitDueAt = try values.decodeIfPresent(Date.self, forKey: .explicitDueAt)
+        suggestedReviewAt = try values.decodeIfPresent(Date.self, forKey: .suggestedReviewAt)
+        contextLabel = try values.decodeIfPresent(String.self, forKey: .contextLabel)
+        confidence = min(max(try values.decode(Double.self, forKey: .confidence), 0), 1)
+        state = try values.decode(CommitmentState.self, forKey: .state)
+        linkedEventIDs = try values.decodeIfPresent([UUID].self, forKey: .linkedEventIDs) ?? []
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(eventID, forKey: .eventID)
+        try values.encode(owner, forKey: .owner)
+        try values.encode(action, forKey: .action)
+        try values.encode(rationale, forKey: .rationale)
+        try values.encodeIfPresent(explicitDueAt, forKey: .explicitDueAt)
+        try values.encodeIfPresent(suggestedReviewAt, forKey: .suggestedReviewAt)
+        try values.encodeIfPresent(contextLabel, forKey: .contextLabel)
+        try values.encode(confidence, forKey: .confidence)
+        try values.encode(state, forKey: .state)
+        try values.encode(linkedEventIDs, forKey: .linkedEventIDs)
+        try values.encode(createdAt, forKey: .createdAt)
+        try values.encode(updatedAt, forKey: .updatedAt)
     }
 }
 
@@ -345,6 +400,7 @@ struct CommitmentDraft: Codable, Hashable, Sendable {
     var rationale: String
     var explicitDueAt: Date?
     var suggestedReviewAt: Date?
+    var contextLabel: String?
     var confidence: Double
     var state: CommitmentState
 }

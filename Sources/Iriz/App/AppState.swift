@@ -25,6 +25,7 @@ final class AppState: ObservableObject {
     @Published var selectedSection: MainSection = .journal
     @Published private(set) var events: [ActivityEvent] = []
     @Published private(set) var commitments: [Commitment] = []
+    @Published private(set) var resolvedCommitments: [Commitment] = []
     @Published private(set) var assistantHistory: [AssistantAnswer] = []
     @Published private(set) var captureHealth: CaptureHealth = .paused
     @Published private(set) var pendingCount = 0
@@ -187,10 +188,16 @@ final class AppState: ObservableObject {
         guard let repository else { return }
         do {
             async let eventValues = repository.events(limit: 500, importantOnly: false)
-            async let commitmentValues = repository.commitments(includingClosed: false)
+            async let commitmentValues = repository.commitments(includingClosed: true)
             async let pendingValues = repository.pendingObservations(limit: 500)
             events = try await eventValues
-            commitments = try await commitmentValues
+            let allCommitments = try await commitmentValues
+            commitments = allCommitments.filter { $0.state != .completed && $0.state != .dismissed }
+            resolvedCommitments = allCommitments
+                .filter { $0.state == .completed }
+                .sorted { $0.updatedAt > $1.updatedAt }
+                .prefix(100)
+                .map { $0 }
             pendingCount = try await pendingValues.count
             latestInsight = events.first(where: { $0.importance >= .important })
         } catch {
@@ -231,17 +238,18 @@ final class AppState: ObservableObject {
     }
 
     var isListenEnabled: Bool {
-        settingsStore.settings.audioMode != .off
+        settingsStore.settings.isListenEnabled
     }
 
     var observationStatusText: String {
         let configured = settingsStore.settings
         if configured.isPaused { return "Paused" }
-        if configured.screenCaptureEnabled, configured.isAudioActiveNow { return "Observing + listening" }
-        if configured.screenCaptureEnabled, configured.audioMode == .schedule { return "Observing · listening scheduled" }
-        if configured.screenCaptureEnabled { return "Observing" }
+        if configured.captureTiming == .schedule, !configured.isCaptureWindowActive(at: Date()) {
+            return "Waiting — not capturing until the scheduled hours"
+        }
+        if configured.isScreenCaptureActiveNow, configured.isAudioActiveNow { return "Observing + listening" }
+        if configured.isScreenCaptureActiveNow { return "Observing" }
         if configured.isAudioActiveNow { return "Listening" }
-        if configured.audioMode == .schedule { return "Listening scheduled" }
         return "Paused"
     }
 
@@ -261,7 +269,8 @@ final class AppState: ObservableObject {
             setPaused(false)
         case .schedule:
             settingsStore.settings.screenCaptureEnabled = true
-            settingsStore.settings.audioMode = .schedule
+            settingsStore.settings.audioMode = .alwaysOn
+            settingsStore.settings.captureTiming = .schedule
             setPaused(false)
         case .paused:
             setPaused(true)
@@ -283,6 +292,11 @@ final class AppState: ObservableObject {
 
     func setListeningBehavior(_ mode: AudioMode) {
         settingsStore.settings.setListeningBehavior(mode)
+        configureAudio()
+    }
+
+    func setCaptureTiming(_ timing: CaptureTiming) {
+        settingsStore.settings.setCaptureTiming(timing)
         configureAudio()
     }
 
@@ -633,30 +647,57 @@ final class AppState: ObservableObject {
                 observation: observation,
                 imageData: observation.source == .screen ? mediaData : nil,
                 outputLanguage: settingsStore.outputLanguagePrompt(),
+                followUpSensitivity: settingsStore.settings.followUpSensitivity,
+                knownFollowUpContexts: FollowUpContextGrouper.contextLabels(from: commitments),
                 apiKey: key
             )
             if interpretation.shouldCreateEvent, let event = interpretation.event {
-                let consolidated = await consolidate(event)
+                let localConsolidation = await consolidate(event)
+                let shouldRefine = localConsolidation.importance >= .important
+                    || localConsolidation.status == .completed
+                    || localConsolidation.kind == .meeting
+                    || !interpretation.commitments.isEmpty
+                let consolidated: ActivityEvent
+                if shouldRefine {
+                    consolidated = (try? await ai.refine(
+                        event: localConsolidation,
+                        outputLanguage: settingsStore.outputLanguagePrompt(),
+                        apiKey: key
+                    )) ?? localConsolidation
+                } else {
+                    consolidated = localConsolidation
+                }
                 try await repository.saveEvent(consolidated)
-                let openCommitments = try await repository.commitments(includingClosed: false)
-                for existing in openCommitments {
+                var openCommitments = try await repository.commitments(includingClosed: false)
+                for index in openCommitments.indices {
+                    let existing = openCommitments[index]
                     if let linked = CommitmentLinker.linking(existing, to: consolidated) {
                         try await repository.saveCommitment(linked)
+                        openCommitments[index] = linked
                     }
                 }
+                // Keep extracted follow-ups locally even when the current sensitivity hides them.
+                // This lets the user widen sensitivity later without losing earlier evidence.
                 for draft in interpretation.commitments {
                     let state: CommitmentState = draft.confidence < 0.7 ? .maybe : draft.state
-                    let commitment = Commitment(
+                    let proposed = Commitment(
                         eventID: consolidated.id,
                         owner: draft.owner,
                         action: draft.action,
                         rationale: draft.rationale,
                         explicitDueAt: draft.explicitDueAt,
                         suggestedReviewAt: draft.suggestedReviewAt,
+                        contextLabel: FollowUpContextGrouper.canonicalLabel(draft.contextLabel),
                         confidence: draft.confidence,
                         state: state
                     )
+                    let commitment = CommitmentLinker.mergingDuplicate(proposed, into: openCommitments) ?? proposed
                     try await repository.saveCommitment(commitment)
+                    if let index = openCommitments.firstIndex(where: { $0.id == commitment.id }) {
+                        openCommitments[index] = commitment
+                    } else {
+                        openCommitments.append(commitment)
+                    }
                 }
                 if consolidated.importance >= .important { latestInsight = consolidated }
             }
@@ -709,11 +750,13 @@ final class AppState: ObservableObject {
     private var configuredCaptureHealth: CaptureHealth {
         let configured = settingsStore.settings
         guard !configured.isPaused else { return .paused }
-        if configured.isAudioActiveNow {
-            return configured.screenCaptureEnabled ? .observingAndListening : .listening
+        if configured.captureTiming == .schedule, !configured.isCaptureWindowActive(at: Date()) {
+            return (configured.screenCaptureEnabled || configured.isListenEnabled) ? .waitingForSchedule : .paused
         }
-        if configured.screenCaptureEnabled { return .observing }
-        if configured.audioMode == .schedule { return .scheduled }
+        if configured.isAudioActiveNow {
+            return configured.isScreenCaptureActiveNow ? .observingAndListening : .listening
+        }
+        if configured.isScreenCaptureActiveNow { return .observing }
         return .paused
     }
 }

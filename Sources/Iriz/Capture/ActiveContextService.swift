@@ -10,11 +10,30 @@ struct ActiveContext: Equatable, Sendable {
     var isMeeting: Bool
 }
 
+private struct ActiveApplicationSnapshot: Sendable {
+    let processIdentifier: pid_t
+    let bundleIdentifier: String?
+    let localizedName: String?
+}
+
 actor ActiveContextService {
-    func current(settings: IrizSettings) -> ActiveContext? {
-        guard let application = NSWorkspace.shared.frontmostApplication else { return nil }
+    func current(settings: IrizSettings) async -> ActiveContext? {
+        let application: ActiveApplicationSnapshot? = await MainActor.run {
+            guard let running = NSWorkspace.shared.frontmostApplication else { return nil }
+            return ActiveApplicationSnapshot(
+                processIdentifier: running.processIdentifier,
+                bundleIdentifier: running.bundleIdentifier,
+                localizedName: running.localizedName
+            )
+        }
+        guard let application else { return nil }
         let bundleIdentifier = application.bundleIdentifier
         let applicationName = application.localizedName
+        guard Self.shouldInspect(
+            bundleIdentifier: bundleIdentifier,
+            ownBundleIdentifier: Bundle.main.bundleIdentifier,
+            excludedBundleIdentifiers: settings.excludedBundleIdentifiers
+        ) else { return nil }
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         if let focused = copyElementAttribute(kAXFocusedUIElementAttribute as CFString, from: appElement),
            copyStringAttribute(kAXSubroleAttribute as CFString, from: focused) == (kAXSecureTextFieldSubrole as String) {
@@ -37,6 +56,16 @@ actor ActiveContextService {
             settings: settings
         ) else { return nil }
         return context
+    }
+
+    nonisolated static func shouldInspect(
+        bundleIdentifier: String?,
+        ownBundleIdentifier: String?,
+        excludedBundleIdentifiers: Set<String>
+    ) -> Bool {
+        guard let bundleIdentifier else { return true }
+        if bundleIdentifier == ownBundleIdentifier { return false }
+        return !excludedBundleIdentifiers.contains(bundleIdentifier)
     }
 
     private func findURL(in root: AXUIElement) -> URL? {
