@@ -37,6 +37,9 @@ mkdir -p "$APP_ROOT/Contents/MacOS" "$APP_ROOT/Contents/Resources"
 lipo -create "$ARM_BINARY" "$INTEL_BINARY" -output "$APP_ROOT/Contents/MacOS/Iriz"
 cp "$PROJECT_ROOT/Packaging/Info.plist" "$APP_ROOT/Contents/Info.plist"
 cp "$PROJECT_ROOT/Assets/IrizIcon.icns" "$APP_ROOT/Contents/Resources/AppIcon.icns"
+if [[ "$IDENTITY" == "-" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :IrizAdHocBuild bool true" "$APP_ROOT/Contents/Info.plist"
+fi
 xattr -cr "$APP_ROOT"
 
 SIGN_OPTIONS=(

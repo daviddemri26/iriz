@@ -88,6 +88,30 @@ struct IrizCoreTests {
         #expect(ObservationMode.current(for: settings) == .schedule)
     }
 
+    @Test("Screen capture never retries while permission is inactive")
+    func screenCapturePermissionGate() {
+        var settings = IrizSettings()
+        settings.isPaused = false
+        settings.screenCaptureEnabled = true
+        #expect(!ScreenCaptureService.shouldAttemptCapture(settings: settings, permission: .notDetermined))
+        #expect(!ScreenCaptureService.shouldAttemptCapture(settings: settings, permission: .denied))
+        #expect(ScreenCaptureService.shouldAttemptCapture(settings: settings, permission: .granted))
+    }
+
+    @Test("Permission status distinguishes never requested from denied")
+    func permissionStatusInference() {
+        #expect(PermissionService.inferredState(isGranted: true, wasRequested: false) == .granted)
+        #expect(PermissionService.inferredState(isGranted: false, wasRequested: false) == .notDetermined)
+        #expect(PermissionService.inferredState(isGranted: false, wasRequested: true) == .denied)
+    }
+
+    @Test("Keychain approval states never expose destructive actions")
+    func keychainApprovalState() {
+        #expect(APIKeyState.checking.canRemove == false)
+        #expect(APIKeyState.needsApproval.canRemove == false)
+        #expect(APIKeyState.saved.canRemove)
+    }
+
     @Test("Silence produces no upload and natural silence closes speech")
     func voiceActivityDetection() {
         var segmenter = SpeechSegmenter()

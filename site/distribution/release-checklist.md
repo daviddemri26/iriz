@@ -9,10 +9,10 @@
 
 ## Website
 
-- Replace every `YOUR-DOMAIN.example` placeholder in the listing draft.
-- Confirm absolute Open Graph URLs after the production domain is known.
-- Add the production domain to `robots.txt` and create a final sitemap.
-- Verify the deployed home, Privacy, Support and Press Kit pages.
+- Confirm `https://lafayette-consulting.us/iriz/` and all absolute Open Graph URLs after deployment.
+- Verify `robots.txt` and `sitemap.xml` under the `/iriz/` path.
+- Verify the deployed Home, Download, Privacy, Support and Press Kit pages.
+- Verify the Download page and its direct release asset URL.
 - Confirm the hosting provider’s request-log and retention configuration.
 
 ## Privacy and legal review
@@ -37,6 +37,7 @@
 - Set the final bundle identifier, version and build number.
 - Sign with the release Developer ID or App Store certificate.
 - Notarize and staple direct-download builds.
+- Publish the signed and notarized archive to GitHub Releases with the exact asset name `Iriz.zip` so the permanent direct link works.
 - Validate entitlements and permission purpose strings.
 - Test first launch, onboarding, permissions, pause, exclusions and uninstall cleanup on a clean Mac.
 - Test Universal Binary behavior on Apple silicon and Intel if both remain supported.

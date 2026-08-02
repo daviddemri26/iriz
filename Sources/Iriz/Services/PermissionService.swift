@@ -1,3 +1,4 @@
+@preconcurrency import AppKit
 @preconcurrency import AVFoundation
 @preconcurrency import ApplicationServices
 import Combine
@@ -11,7 +12,7 @@ enum PermissionState: Equatable, Sendable {
     case granted
 }
 
-enum IrizPermission: CaseIterable, Sendable {
+enum IrizPermission: CaseIterable, Equatable, Sendable {
     case screenRecording
     case microphone
     case accessibility
@@ -35,12 +36,19 @@ struct PermissionSnapshot: Equatable, Sendable {
 }
 
 enum PermissionService {
-    static func screenCaptureState() -> PermissionState {
-        CGPreflightScreenCaptureAccess() ? .granted : .notDetermined
+    private static let screenRequestedKey = "iriz.permission.screen-recording.requested"
+    private static let accessibilityRequestedKey = "iriz.permission.accessibility.requested"
+
+    static func screenCaptureState(defaults: UserDefaults = .standard) -> PermissionState {
+        inferredState(
+            isGranted: CGPreflightScreenCaptureAccess(),
+            wasRequested: defaults.bool(forKey: screenRequestedKey)
+        )
     }
 
-    static func requestScreenCapture() -> Bool {
-        CGRequestScreenCaptureAccess()
+    static func requestScreenCapture(defaults: UserDefaults = .standard) -> Bool {
+        defaults.set(true, forKey: screenRequestedKey)
+        return CGRequestScreenCaptureAccess()
     }
 
     static func microphoneState() -> PermissionState {
@@ -56,11 +64,15 @@ enum PermissionService {
         await AVCaptureDevice.requestAccess(for: .audio)
     }
 
-    static func accessibilityState() -> PermissionState {
-        AXIsProcessTrusted() ? .granted : .notDetermined
+    static func accessibilityState(defaults: UserDefaults = .standard) -> PermissionState {
+        inferredState(
+            isGranted: AXIsProcessTrusted(),
+            wasRequested: defaults.bool(forKey: accessibilityRequestedKey)
+        )
     }
 
-    static func requestAccessibility() {
+    static func requestAccessibility(defaults: UserDefaults = .standard) {
+        defaults.set(true, forKey: accessibilityRequestedKey)
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }
@@ -78,12 +90,29 @@ enum PermissionService {
         @unknown default: .denied
         }
     }
+
+    static func inferredState(isGranted: Bool, wasRequested: Bool) -> PermissionState {
+        if isGranted { return .granted }
+        return wasRequested ? .denied : .notDetermined
+    }
+
+    static func openSystemSettings(for permission: IrizPermission) {
+        let pane = switch permission {
+        case .screenRecording: "com.apple.preference.security?Privacy_ScreenCapture"
+        case .microphone: "com.apple.preference.security?Privacy_Microphone"
+        case .accessibility: "com.apple.preference.security?Privacy_Accessibility"
+        case .notifications: "com.apple.Notifications-Settings.extension"
+        }
+        guard let url = URL(string: "x-apple.systempreferences:\(pane)") else { return }
+        NSWorkspace.shared.open(url)
+    }
 }
 
 @MainActor
 final class PermissionMonitor: ObservableObject {
     @Published private(set) var snapshot = PermissionSnapshot()
     @Published private(set) var isRefreshing = false
+    @Published private(set) var requestedPermission: IrizPermission?
 
     func monitor() async {
         await refresh()
@@ -107,6 +136,13 @@ final class PermissionMonitor: ObservableObject {
     }
 
     func request(_ permission: IrizPermission) async {
+        guard requestedPermission == nil else { return }
+        requestedPermission = permission
+        defer { requestedPermission = nil }
+        if snapshot[permission] == .denied {
+            PermissionService.openSystemSettings(for: permission)
+            return
+        }
         switch permission {
         case .screenRecording:
             _ = PermissionService.requestScreenCapture()

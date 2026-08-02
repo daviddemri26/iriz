@@ -21,6 +21,7 @@ struct SettingsView: View {
                     Text("Iriz is local first. You decide what it can observe and what leaves your Mac.")
                         .foregroundStyle(.secondary)
                 }
+                if app.secureStorageState != .ready { secureStorageSection }
                 apiSection
                 captureSection
                 languageAndRetention
@@ -57,6 +58,34 @@ struct SettingsView: View {
         }
     }
 
+    private var secureStorageSection: some View {
+        SettingsGroup(
+            title: "Secure Storage",
+            subtitle: "Automatic checks never open Keychain dialogs. Approval is requested only from this button."
+        ) {
+            HStack(spacing: 10) {
+                Image(systemName: app.secureStorageState == .checking ? "hourglass" : "lock.shield")
+                    .foregroundStyle(app.secureStorageState == .needsApproval ? Color.orange : IrizTheme.violet)
+                Text(app.secureStorageState.displayName)
+                    .font(.callout.weight(.medium))
+                Spacer()
+                if app.secureStorageState != .checking {
+                    Button("Unlock Secure Storage") {
+                        Task { await app.unlockSecureStorage() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(IrizTheme.violet)
+                }
+            }
+            if let error = app.storageError {
+                Text(error).font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Local development rebuilds use an ad hoc signature, so macOS may ask again. Release builds use one stable Developer ID identity.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private var apiSection: some View {
         SettingsGroup(title: "OpenAI", subtitle: "Your personal paid API key is sent directly to OpenAI and stored only in macOS Keychain.") {
             SecureField(settings.apiKeyState == .missing ? "sk-…" : "Enter a replacement key", text: $apiKey)
@@ -65,7 +94,7 @@ struct SettingsView: View {
                 Circle().fill(apiStateColor).frame(width: 8, height: 8)
                 Text(settings.apiKeyState.displayName).font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                if settings.apiKeyState != .missing {
+                if settings.apiKeyState.canRemove {
                     Button("Remove") {
                         do { try settings.removeAPIKey(); apiKey = "" } catch { message = error.localizedDescription }
                     }
@@ -182,17 +211,33 @@ struct SettingsView: View {
 
     private var permissionsSection: some View {
         SettingsGroup(title: "Permissions", subtitle: "Each permission is separate and can be changed in System Settings.") {
-            PermissionRow(title: "Screen Recording", state: permissionMonitor.snapshot.screenRecording) {
+            PermissionRow(
+                title: "Screen Recording",
+                state: permissionMonitor.snapshot.screenRecording,
+                isRequesting: permissionMonitor.requestedPermission == .screenRecording
+            ) {
                 await permissionMonitor.request(.screenRecording)
             }
-            PermissionRow(title: "Microphone", state: permissionMonitor.snapshot.microphone) {
+            PermissionRow(
+                title: "Microphone",
+                state: permissionMonitor.snapshot.microphone,
+                isRequesting: permissionMonitor.requestedPermission == .microphone
+            ) {
                 await permissionMonitor.request(.microphone)
                 app.configureAudio()
             }
-            PermissionRow(title: "Accessibility", state: permissionMonitor.snapshot.accessibility) {
+            PermissionRow(
+                title: "Accessibility",
+                state: permissionMonitor.snapshot.accessibility,
+                isRequesting: permissionMonitor.requestedPermission == .accessibility
+            ) {
                 await permissionMonitor.request(.accessibility)
             }
-            PermissionRow(title: "Notifications", state: permissionMonitor.snapshot.notifications) {
+            PermissionRow(
+                title: "Notifications",
+                state: permissionMonitor.snapshot.notifications,
+                isRequesting: permissionMonitor.requestedPermission == .notifications
+            ) {
                 await permissionMonitor.request(.notifications)
             }
             HStack {
@@ -227,12 +272,14 @@ struct SettingsView: View {
 
     private var filteredLanguages: [LanguageOption] {
         let query = languageSearch.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
-        if !query.isEmpty {
-            return Array(settings.languages.lazy.filter { $0.searchableText.contains(query) }.prefix(60))
-        }
+        guard !query.isEmpty else { return commonLanguages }
+        return commonLanguages.filter { $0.searchableText.contains(query) }
+    }
+
+    private var commonLanguages: [LanguageOption] {
         let commonIdentifiers = [
             "en-US", "fr-FR", "es-ES", "de-DE", "it-IT", "pt-BR", "nl-NL", "pl-PL",
-            "tr-TR", "ru-RU", "ar-SA", "he-IL", "hi-IN", "ja-JP", "ko-KR", "zh-Hans-CN"
+            "tr-TR", "ru-RU", "ar-SA", "hi-IN", "ja-JP", "ko-KR", "zh-CN"
         ]
         return commonIdentifiers.compactMap { identifier in
             settings.languages.first(where: { $0.identifier == identifier })
@@ -273,7 +320,8 @@ struct SettingsView: View {
         case .valid: IrizTheme.mint
         case .invalid: .red
         case .testing: .orange
-        case .missing, .saved: .secondary
+        case .needsApproval: .orange
+        case .checking, .missing, .saved: .secondary
         }
     }
 
@@ -312,6 +360,7 @@ private struct SettingsGroup<Content: View>: View {
 struct PermissionRow: View {
     let title: String
     let state: PermissionState
+    var isRequesting = false
     let request: () async -> Void
 
     var body: some View {
@@ -322,7 +371,10 @@ struct PermissionRow: View {
             Spacer()
             Text(stateLabel).font(.caption).foregroundStyle(.secondary)
             if state != .granted {
-                Button("Allow") { Task { await request() } }
+                Button(state == .denied ? "Open Settings" : "Allow") {
+                    Task { await request() }
+                }
+                .disabled(isRequesting)
             }
         }
     }

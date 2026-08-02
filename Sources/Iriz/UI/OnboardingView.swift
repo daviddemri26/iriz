@@ -67,17 +67,33 @@ struct OnboardingView: View {
             Text("You can enable or revoke each permission separately at any time.").foregroundStyle(.secondary)
             SoftCard {
                 VStack(spacing: 14) {
-                    PermissionRow(title: "Screen Recording", state: permissionMonitor.snapshot.screenRecording) {
+                    PermissionRow(
+                        title: "Screen Recording",
+                        state: permissionMonitor.snapshot.screenRecording,
+                        isRequesting: permissionMonitor.requestedPermission == .screenRecording
+                    ) {
                         await permissionMonitor.request(.screenRecording)
                     }
-                    PermissionRow(title: "Accessibility", state: permissionMonitor.snapshot.accessibility) {
+                    PermissionRow(
+                        title: "Accessibility",
+                        state: permissionMonitor.snapshot.accessibility,
+                        isRequesting: permissionMonitor.requestedPermission == .accessibility
+                    ) {
                         await permissionMonitor.request(.accessibility)
                     }
-                    PermissionRow(title: "Microphone", state: permissionMonitor.snapshot.microphone) {
+                    PermissionRow(
+                        title: "Microphone",
+                        state: permissionMonitor.snapshot.microphone,
+                        isRequesting: permissionMonitor.requestedPermission == .microphone
+                    ) {
                         await permissionMonitor.request(.microphone)
                         app.configureAudio()
                     }
-                    PermissionRow(title: "Notifications", state: permissionMonitor.snapshot.notifications) {
+                    PermissionRow(
+                        title: "Notifications",
+                        state: permissionMonitor.snapshot.notifications,
+                        isRequesting: permissionMonitor.requestedPermission == .notifications
+                    ) {
                         await permissionMonitor.request(.notifications)
                     }
                 }
@@ -95,6 +111,17 @@ struct OnboardingView: View {
             SecureField("sk-…", text: $apiKey).textFieldStyle(.roundedBorder).font(.title3)
             Label("Iriz sends store: false with every analysis request.", systemImage: "checkmark.shield")
                 .font(.callout).foregroundStyle(.secondary)
+            if app.secureStorageState == .needsApproval {
+                HStack {
+                    Label("Keychain approval is required for the encrypted journal.", systemImage: "lock.shield")
+                    Spacer()
+                    Button("Unlock Secure Storage") {
+                        Task { await app.unlockSecureStorage() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(IrizTheme.violet)
+                }
+            }
         }
     }
 }

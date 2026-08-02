@@ -10,9 +10,10 @@ This copy is prepared for a future macOS listing. Confirm the final business mod
 - **Secondary category:** Business
 - **Platform:** macOS 15 or later
 - **Copyright:** © 2026 Iriz
-- **Marketing URL:** `https://YOUR-DOMAIN.example/`
-- **Privacy Policy URL:** `https://YOUR-DOMAIN.example/privacy.html`
-- **Support URL:** `https://YOUR-DOMAIN.example/support.html`
+- **Marketing URL:** `https://lafayette-consulting.us/iriz/`
+- **Direct download URL:** `https://lafayette-consulting.us/iriz/download.html`
+- **Privacy Policy URL:** `https://lafayette-consulting.us/iriz/privacy.html`
+- **Support URL:** `https://lafayette-consulting.us/iriz/support.html`
 - **Public source repository:** [github.com/daviddemri26/iriz](https://github.com/daviddemri26/iriz)
 
 ## Promotional text

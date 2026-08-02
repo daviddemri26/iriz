@@ -60,12 +60,16 @@ enum ApplicationDirectories {
 }
 
 enum SecurityBootstrap {
-    static func keyData(account: String, keychain: KeychainStore = .shared) throws -> Data {
-        if let existing = try keychain.readData(account: account), existing.count == 32 {
+    static func keyData(
+        account: String,
+        keychain: KeychainStore = .shared,
+        interaction: KeychainInteraction = .nonInteractive
+    ) throws -> Data {
+        if let existing = try keychain.readData(account: account, interaction: interaction), existing.count == 32 {
             return existing
         }
         let generated = CryptoBox.generateKeyData()
-        try keychain.writeData(generated, account: account)
+        try keychain.writeData(generated, account: account, interaction: interaction)
         return generated
     }
 }

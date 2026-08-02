@@ -2,6 +2,22 @@
 import Combine
 import Foundation
 
+enum SecureStorageState: Equatable, Sendable {
+    case checking
+    case ready
+    case needsApproval
+    case unavailable(String)
+
+    var displayName: String {
+        switch self {
+        case .checking: "Checking secure storage…"
+        case .ready: "Secure storage is ready"
+        case .needsApproval: "Keychain approval is required"
+        case .unavailable(let message): message
+        }
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     static let shared = AppState()
@@ -19,11 +35,12 @@ final class AppState: ObservableObject {
     @Published private(set) var exportMessage: String?
     @Published private(set) var isEnrollingVoice = false
     @Published private(set) var voiceEnrollmentMessage: String?
+    @Published private(set) var secureStorageState: SecureStorageState = .checking
 
     let settingsStore = SettingsStore.shared
-    private let repository: EncryptedSQLiteStore?
-    private let mediaStore: EncryptedMediaStore?
-    private let searchService: LocalSearchService?
+    private var repository: EncryptedSQLiteStore?
+    private var mediaStore: EncryptedMediaStore?
+    private var searchService: LocalSearchService?
     private let ai: any AIProviding
     private let screenCapture = ScreenCaptureService()
     private let audioCapture = AudioCaptureService()
@@ -36,26 +53,10 @@ final class AppState: ObservableObject {
 
     init(ai: any AIProviding = OpenAIClient()) {
         self.ai = ai
-        var resolvedRepository: EncryptedSQLiteStore?
-        var resolvedMediaStore: EncryptedMediaStore?
-        var resolvedSearchService: LocalSearchService?
-        var initializationError: String?
-        do {
-            let repository = try EncryptedSQLiteStore()
-            resolvedRepository = repository
-            resolvedMediaStore = try EncryptedMediaStore()
-            resolvedSearchService = LocalSearchService(repository: repository)
-            initializationError = nil
-        } catch {
-            resolvedRepository = nil
-            resolvedMediaStore = nil
-            resolvedSearchService = nil
-            initializationError = error.localizedDescription
-        }
-        self.repository = resolvedRepository
-        self.mediaStore = resolvedMediaStore
-        self.searchService = resolvedSearchService
-        self.storageError = initializationError
+        self.repository = nil
+        self.mediaStore = nil
+        self.searchService = nil
+        self.storageError = nil
 
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.sessionDidResignActiveNotification,
@@ -76,6 +77,17 @@ final class AppState: ObservableObject {
     }
 
     func bootstrap() async {
+        if DistributionEnvironment.requiresExplicitKeychainUnlock {
+            // Ad hoc builds have no stable designated requirement. macOS can therefore
+            // challenge every rebuilt binary for each legacy Keychain item. Never let a
+            // development build create those dialogs without an explicit user action.
+            secureStorageState = .needsApproval
+            storageError = "This development build needs one explicit Keychain unlock. No password dialog will open automatically."
+            settingsStore.setAPIKeyState(.needsApproval)
+            captureHealth = .permissionNeeded("Keychain access")
+        } else {
+            await initializeSecureStorage(interaction: .nonInteractive)
+        }
         await refresh()
         await cleanup()
         await screenCapture.start(
@@ -94,6 +106,81 @@ final class AppState: ObservableObject {
                 await self.maintenanceTick()
             }
         }
+    }
+
+    private func initializeSecureStorage(interaction: KeychainInteraction) async {
+        secureStorageState = .checking
+        do {
+            let stores = try await Task.detached(priority: .userInitiated) {
+                // These reads are intentionally sequential. macOS must never receive
+                // multiple Keychain authorization requests from Iriz at once.
+                let databaseKey = try SecurityBootstrap.keyData(
+                    account: KeychainAccounts.databaseKey,
+                    interaction: interaction
+                )
+                let mediaKey = try SecurityBootstrap.keyData(
+                    account: KeychainAccounts.mediaKey,
+                    interaction: interaction
+                )
+                let repository = try EncryptedSQLiteStore(keyData: databaseKey)
+                let mediaStore = try EncryptedMediaStore(keyData: mediaKey)
+                return (repository, mediaStore)
+            }.value
+            repository = stores.0
+            mediaStore = stores.1
+            searchService = LocalSearchService(repository: stores.0)
+            secureStorageState = .ready
+            DistributionEnvironment.markStableKeychainReady()
+            storageError = nil
+        } catch {
+            repository = nil
+            mediaStore = nil
+            searchService = nil
+            if let keychainError = error as? KeychainStoreError, keychainError.requiresUserApproval {
+                secureStorageState = .needsApproval
+                storageError = "Iriz needs one explicit Keychain approval before it can open your encrypted journal."
+                captureHealth = .permissionNeeded("Keychain access")
+            } else {
+                secureStorageState = .unavailable(error.localizedDescription)
+                storageError = error.localizedDescription
+                captureHealth = .error(error.localizedDescription)
+            }
+            settingsStore.setAPIKeyState(.needsApproval)
+            return
+        }
+
+        do {
+            let loadVoiceReference = settingsStore.settings.voiceEnrollmentEnabled
+            let credentials = try await Task.detached(priority: .utility) {
+                let apiKey = try KeychainStore.shared.readString(
+                    account: KeychainAccounts.openAIAPIKey,
+                    interaction: interaction
+                )
+                let voiceReference = loadVoiceReference
+                    ? try KeychainStore.shared.readData(
+                        account: KeychainAccounts.voiceReference,
+                        interaction: interaction
+                    )
+                    : nil
+                return (apiKey, voiceReference)
+            }.value
+            settingsStore.installKeychainCache(apiKey: credentials.0, voiceReference: credentials.1)
+        } catch {
+            if let keychainError = error as? KeychainStoreError, keychainError.requiresUserApproval {
+                settingsStore.setAPIKeyState(.needsApproval)
+            } else {
+                settingsStore.setAPIKeyState(.invalid(error.localizedDescription))
+            }
+        }
+    }
+
+    func unlockSecureStorage() async {
+        await initializeSecureStorage(interaction: .userInitiated)
+        guard secureStorageState == .ready else { return }
+        await refresh()
+        await cleanup()
+        configureAudio()
+        await retryPending()
     }
 
     func refresh() async {
@@ -117,6 +204,10 @@ final class AppState: ObservableObject {
             captureHealth = .paused
             audioCapture.stop()
         } else {
+            guard secureStorageState == .ready else {
+                captureHealth = .permissionNeeded("Keychain access")
+                return
+            }
             captureHealth = settingsStore.settings.isAudioActiveNow ? .listening : .observing
             configureAudio()
             Task { await retryPending() }
@@ -165,6 +256,12 @@ final class AppState: ObservableObject {
     }
 
     func configureAudio() {
+        guard secureStorageState == .ready else {
+            audioCapture.stop()
+            Task { await systemAudioCapture.stop() }
+            captureHealth = .permissionNeeded("Keychain access")
+            return
+        }
         guard settingsStore.settings.isAudioActiveNow else {
             audioCapture.stop()
             Task { await systemAudioCapture.stop() }
@@ -457,7 +554,11 @@ final class AppState: ObservableObject {
     func openMainWindow(section: MainSection? = nil) {
         if let section { selectedSection = section }
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.windows.first(where: { !($0 is NSPanel) })?.makeKeyAndOrderFront(nil)
+        if let window = NSApp.windows.first(where: { !($0 is NSPanel) }) {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            NotificationCenter.default.post(name: .irizOpenMainWindow, object: nil)
+        }
     }
 
     func testAPIKey(_ candidate: String) async {

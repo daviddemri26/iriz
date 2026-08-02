@@ -33,11 +33,14 @@ actor ScreenCaptureService {
             while !Task.isCancelled {
                 guard let self else { return }
                 let settings = await settingsProvider()
-                if !settings.isPaused && settings.screenCaptureEnabled {
+                if Self.shouldAttemptCapture(
+                    settings: settings,
+                    permission: PermissionService.screenCaptureState()
+                ) {
                     do {
                         try await self.captureOne(settings: settings, handler: handler)
                     } catch {
-                        // The owning app state surfaces permissions and retries without creating noisy logs.
+                        // Retry quietly. Only the explicit Allow button may open a system prompt.
                     }
                 }
                 try? await Task.sleep(for: .seconds(2))
@@ -50,6 +53,10 @@ actor ScreenCaptureService {
         captureTask = nil
         previousSignature = nil
         previousContext = nil
+    }
+
+    nonisolated static func shouldAttemptCapture(settings: IrizSettings, permission: PermissionState) -> Bool {
+        !settings.isPaused && settings.screenCaptureEnabled && permission == .granted
     }
 
     private func captureOne(settings: IrizSettings, handler: @escaping Handler) async throws {

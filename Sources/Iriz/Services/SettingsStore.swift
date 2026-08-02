@@ -2,7 +2,9 @@ import Combine
 import Foundation
 import ServiceManagement
 
-enum APIKeyState: Equatable {
+enum APIKeyState: Equatable, Sendable {
+    case checking
+    case needsApproval
     case missing
     case saved
     case testing
@@ -11,11 +13,20 @@ enum APIKeyState: Equatable {
 
     var displayName: String {
         switch self {
+        case .checking: "Checking Keychain…"
+        case .needsApproval: "Keychain approval required"
         case .missing: "No API key saved"
         case .saved: "API key saved in Keychain"
         case .testing: "Testing connection…"
         case .valid: "Connected to OpenAI"
         case .invalid(let message): message
+        }
+    }
+
+    var canRemove: Bool {
+        switch self {
+        case .saved, .valid: true
+        case .checking, .needsApproval, .missing, .testing, .invalid: false
         }
     }
 }
@@ -33,6 +44,8 @@ final class SettingsStore: ObservableObject {
     private let defaults: UserDefaults
     private let keychain: KeychainStore
     private let storageKey = "iriz.settings.v1"
+    private var cachedAPIKey: String?
+    private var cachedVoiceReference: Data?
 
     init(defaults: UserDefaults = .standard, keychain: KeychainStore = .shared) {
         self.defaults = defaults
@@ -43,12 +56,12 @@ final class SettingsStore: ObservableObject {
         } else {
             self.settings = IrizSettings()
         }
-        self.apiKeyState = ((try? keychain.readString(account: KeychainAccounts.openAIAPIKey)) ?? nil) == nil ? .missing : .saved
+        self.apiKeyState = .checking
         self.languages = LanguageOption.allOptions()
     }
 
     func apiKey() throws -> String? {
-        try keychain.readString(account: KeychainAccounts.openAIAPIKey)
+        cachedAPIKey
     }
 
     func saveAPIKey(_ key: String) throws {
@@ -57,31 +70,47 @@ final class SettingsStore: ObservableObject {
             try removeAPIKey()
             return
         }
-        try keychain.writeString(trimmed, account: KeychainAccounts.openAIAPIKey)
+        try keychain.writeString(
+            trimmed,
+            account: KeychainAccounts.openAIAPIKey,
+            interaction: .userInitiated
+        )
+        cachedAPIKey = trimmed
         apiKeyState = .saved
     }
 
     func removeAPIKey() throws {
-        try keychain.delete(account: KeychainAccounts.openAIAPIKey)
+        try keychain.delete(account: KeychainAccounts.openAIAPIKey, interaction: .userInitiated)
+        cachedAPIKey = nil
         apiKeyState = .missing
     }
 
     func voiceReference() throws -> Data? {
-        try keychain.readData(account: KeychainAccounts.voiceReference)
+        cachedVoiceReference
     }
 
     func saveVoiceReference(_ data: Data) throws {
-        try keychain.writeData(data, account: KeychainAccounts.voiceReference)
+        try keychain.writeData(data, account: KeychainAccounts.voiceReference, interaction: .userInitiated)
+        cachedVoiceReference = data
         settings.voiceEnrollmentEnabled = true
     }
 
     func removeVoiceReference() throws {
-        try keychain.delete(account: KeychainAccounts.voiceReference)
+        try keychain.delete(account: KeychainAccounts.voiceReference, interaction: .userInitiated)
+        cachedVoiceReference = nil
         settings.voiceEnrollmentEnabled = false
     }
 
     func setAPIKeyState(_ state: APIKeyState) {
         apiKeyState = state
+    }
+
+    func installKeychainCache(apiKey: String?, voiceReference: Data?) {
+        cachedAPIKey = apiKey
+        cachedVoiceReference = voiceReference
+        if apiKeyState == .checking || apiKeyState == .needsApproval {
+            apiKeyState = apiKey == nil ? .missing : .saved
+        }
     }
 
     func setLaunchAtLogin(_ enabled: Bool) throws {

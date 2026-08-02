@@ -53,6 +53,7 @@ struct JournalView: View {
                 Text("Important").tag(true)
                 Text("All Activity").tag(false)
             }
+            .labelsHidden()
             .pickerStyle(.segmented)
             .frame(width: 210)
             TextField("Search people, companies or URLs", text: $search)

@@ -5,29 +5,43 @@ import SwiftUI
 @MainActor
 final class FloatingCapsuleModel: ObservableObject {
     @Published var isExpanded = false
-    @Published var noteText = ""
-    @Published var isAddingNote = false
     @Published private(set) var isDragging = false
+    @Published private(set) var actionsEnabled = false
     var resize: ((Bool) -> Void)?
     var beginDrag: ((NSPoint) -> Void)?
     var updateDrag: ((NSPoint) -> Void)?
     var endDrag: (() -> Void)?
+    private var openTask: Task<Void, Never>?
     private var closeTask: Task<Void, Never>?
+    private var actionsTask: Task<Void, Never>?
     private var isPointerInside = false
+    private var isInteractionActive = false
 
     func hover(_ inside: Bool) {
         isPointerInside = inside
+        openTask?.cancel()
         closeTask?.cancel()
         if inside {
             guard !isDragging else { return }
-            if !isExpanded {
+            guard !isExpanded else { return }
+            openTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled, let self, self.isPointerInside, !self.isDragging else { return }
                 isExpanded = true
                 resize?(true)
+                actionsTask?.cancel()
+                actionsTask = Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(240))
+                    guard !Task.isCancelled else { return }
+                    self?.actionsEnabled = true
+                }
             }
         } else {
             closeTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(550))
-                guard !Task.isCancelled, let self, !self.isAddingNote, !self.isDragging else { return }
+                guard !Task.isCancelled, let self, !self.isInteractionActive, !self.isDragging else { return }
+                self.actionsTask?.cancel()
+                self.actionsEnabled = false
                 self.isExpanded = false
                 self.resize?(false)
             }
@@ -37,6 +51,7 @@ final class FloatingCapsuleModel: ObservableObject {
     func dragChanged() {
         let point = NSEvent.mouseLocation
         if !isDragging {
+            openTask?.cancel()
             closeTask?.cancel()
             isDragging = true
             beginDrag?(point)
@@ -48,7 +63,16 @@ final class FloatingCapsuleModel: ObservableObject {
         guard isDragging else { return }
         isDragging = false
         endDrag?()
-        if !isPointerInside { hover(false) }
+        hover(isPointerInside)
+    }
+
+    func setInteractionActive(_ active: Bool) {
+        isInteractionActive = active
+        if active {
+            closeTask?.cancel()
+        } else if !isPointerInside {
+            hover(false)
+        }
     }
 }
 
@@ -64,7 +88,7 @@ final class FloatingPanelController {
     private var dragStartMouse: NSPoint?
     private var dragStartOrigin: NSPoint?
     private var dockEdge: DockEdge = .right
-    private let collapsed = NSSize(width: 48, height: 48)
+    private let collapsed = NSSize(width: 52, height: 52)
     private let expanded = NSSize(width: 264, height: 286)
     private let edgeInset: CGFloat = 12
 
@@ -78,16 +102,19 @@ final class FloatingPanelController {
         panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.animationBehavior = .utilityWindow
         panel.isExcludedFromWindowsMenu = true
-        panel.contentView = NSHostingView(rootView: FloatingCapsuleView(model: model)
+        let hostingView = NSHostingView(rootView: FloatingCapsuleView(model: model)
             .environmentObject(app)
             .environmentObject(settings))
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        panel.contentView = hostingView
 
         model.resize = { [weak self] expanded in self?.resize(expanded: expanded) }
         model.beginDrag = { [weak self] point in self?.beginDrag(at: point) }
@@ -111,6 +138,7 @@ final class FloatingPanelController {
             y: old.midY - size.height / 2
         )
         origin.y = clampedY(origin.y, height: size.height, in: bounds)
+        panel.hasShadow = isExpanded
         panel.setFrame(NSRect(origin: origin, size: size), display: true, animate: true)
     }
 

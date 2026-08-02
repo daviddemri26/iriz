@@ -20,6 +20,7 @@ struct IrizLogo: View {
 
     var size: CGFloat = 34
     var shape: Shape = .appIcon
+    var castsShadow = true
 
     var body: some View {
         Image(nsImage: NSApplication.shared.applicationIconImage)
@@ -28,7 +29,11 @@ struct IrizLogo: View {
             .scaledToFill()
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: shape == .circle ? size / 2 : size * 0.24, style: .continuous))
-        .shadow(color: IrizTheme.violet.opacity(0.22), radius: size * 0.15, y: size * 0.06)
+        .shadow(
+            color: castsShadow ? IrizTheme.violet.opacity(0.22) : .clear,
+            radius: castsShadow ? size * 0.15 : 0,
+            y: castsShadow ? size * 0.06 : 0
+        )
         .accessibilityLabel("Iriz")
     }
 }
