@@ -120,12 +120,38 @@ struct SettingsView: View {
     }
 
     private var captureSection: some View {
-        SettingsGroup(title: "Observation", subtitle: "Keyboard input, clipboard and camera are never captured.") {
-            Toggle("Observe meaningful screen changes", isOn: $settings.settings.screenCaptureEnabled)
-            Picker("Microphone", selection: $settings.settings.audioMode) {
-                ForEach(AudioMode.allCases, id: \.self) { Text($0.displayName).tag($0) }
+        SettingsGroup(
+            title: "How Iriz works",
+            subtitle: "These are the same controls shown in the floating panel. Pause is the master switch and overrides both channels."
+        ) {
+            ObservationChannelsControl(presentation: .settings)
+            HStack(spacing: 8) {
+                Image(systemName: settings.settings.isPaused ? "pause.circle.fill" : "checkmark.circle.fill")
+                    .foregroundStyle(settings.settings.isPaused ? Color.secondary : IrizTheme.mint)
+                Text(settings.settings.isPaused
+                     ? "Paused — your Observe and Listen choices are preserved for Resume."
+                     : "Active — \(app.observationStatusText).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(settings.settings.isPaused ? "Resume" : "Pause") {
+                    app.setPaused(!settings.settings.isPaused)
+                }
             }
-            .onChange(of: settings.settings.audioMode) { _, _ in app.configureAudio() }
+            Divider()
+            Picker("Listening behavior", selection: Binding(
+                get: { settings.settings.audioMode == .schedule ? AudioMode.schedule : .alwaysOn },
+                set: { app.setListeningBehavior($0) }
+            )) {
+                Text(AudioMode.alwaysOn.displayName).tag(AudioMode.alwaysOn)
+                Text(AudioMode.schedule.displayName).tag(AudioMode.schedule)
+            }
+            .disabled(!app.isListenEnabled)
+            Text(app.isListenEnabled
+                 ? "Always On listens whenever Iriz is active. Schedule listens only during the configured hours."
+                 : "Turn on Listen above to choose when the microphone is active.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Toggle("Recognize meetings in Zoom, Meet and Teams", isOn: $settings.settings.meetingDetectionEnabled)
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -152,7 +178,7 @@ struct SettingsView: View {
                 .textFieldStyle(.roundedBorder)
                 .onSubmit(saveExcludedDomains)
             HStack {
-                Text("Password managers and authentication windows are excluded automatically.")
+                Text("Keyboard input, clipboard and camera are never captured. Password managers and authentication windows are excluded automatically.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Save exclusions", action: saveExcludedDomains)
@@ -161,10 +187,18 @@ struct SettingsView: View {
     }
 
     private var languageAndRetention: some View {
-        SettingsGroup(title: "Journal", subtitle: "The app interface stays in American English. These choices affect generated content and retention.") {
+        SettingsGroup(
+            title: "Journal",
+            subtitle: "The interface stays in American English. This language guides journal writing and helps Iriz understand meetings and voice sessions."
+        ) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Journal language")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Journal & speech language")
+                        Text("Iriz treats this as your usual language, not a restriction when another language is clearly spoken.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
                     Button {
                         withAnimation(.snappy(duration: 0.2)) { isChoosingLanguage.toggle() }
@@ -211,6 +245,15 @@ struct SettingsView: View {
 
     private var permissionsSection: some View {
         SettingsGroup(title: "Permissions", subtitle: "Each permission is separate and can be changed in System Settings.") {
+            if DistributionEnvironment.isAdHocBuild {
+                Label {
+                    Text("Development build: macOS can treat each ad hoc rebuild as a different app. Final permission acceptance will use one Developer ID-signed build installed in Applications.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: "hammer.fill").foregroundStyle(.orange)
+                }
+            }
             PermissionRow(
                 title: "Screen Recording",
                 state: permissionMonitor.snapshot.screenRecording,
@@ -278,7 +321,7 @@ struct SettingsView: View {
 
     private var commonLanguages: [LanguageOption] {
         let commonIdentifiers = [
-            "en-US", "fr-FR", "es-ES", "de-DE", "it-IT", "pt-BR", "nl-NL", "pl-PL",
+            "en-US", "fr-FR", "es-ES", "de-DE", "it-IT", "pt-BR", "he-IL", "pl-PL",
             "tr-TR", "ru-RU", "ar-SA", "hi-IN", "ja-JP", "ko-KR", "zh-CN"
         ]
         return commonIdentifiers.compactMap { identifier in

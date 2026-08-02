@@ -199,6 +199,11 @@ final class AppState: ObservableObject {
     }
 
     func setPaused(_ paused: Bool) {
+        if !paused,
+           !settingsStore.settings.screenCaptureEnabled,
+           settingsStore.settings.audioMode == .off {
+            settingsStore.settings.screenCaptureEnabled = true
+        }
         settingsStore.settings.isPaused = paused
         if paused {
             captureHealth = .paused
@@ -208,7 +213,7 @@ final class AppState: ObservableObject {
                 captureHealth = .permissionNeeded("Keychain access")
                 return
             }
-            captureHealth = settingsStore.settings.isAudioActiveNow ? .listening : .observing
+            captureHealth = configuredCaptureHealth
             configureAudio()
             Task { await retryPending() }
         }
@@ -221,15 +226,23 @@ final class AppState: ObservableObject {
         ObservationMode.current(for: settingsStore.settings)
     }
 
+    var isObserveEnabled: Bool {
+        settingsStore.settings.screenCaptureEnabled
+    }
+
+    var isListenEnabled: Bool {
+        settingsStore.settings.audioMode != .off
+    }
+
     var observationStatusText: String {
-        switch observationMode {
-        case .observe: "Observing"
-        case .listen: "Listening"
-        case .observeAndListen: "Observing + listening"
-        case .schedule:
-            settingsStore.settings.isAudioActiveNow ? "Observing + listening" : "Observing · audio scheduled"
-        case .paused: "Paused"
-        }
+        let configured = settingsStore.settings
+        if configured.isPaused { return "Paused" }
+        if configured.screenCaptureEnabled, configured.isAudioActiveNow { return "Observing + listening" }
+        if configured.screenCaptureEnabled, configured.audioMode == .schedule { return "Observing · listening scheduled" }
+        if configured.screenCaptureEnabled { return "Observing" }
+        if configured.isAudioActiveNow { return "Listening" }
+        if configured.audioMode == .schedule { return "Listening scheduled" }
+        return "Paused"
     }
 
     func setObservationMode(_ mode: ObservationMode) {
@@ -255,6 +268,24 @@ final class AppState: ObservableObject {
         }
     }
 
+    func setObserveEnabled(_ enabled: Bool) {
+        settingsStore.settings.setObserveEnabled(enabled)
+        if settingsStore.settings.isPaused { captureHealth = .paused }
+        guard !settingsStore.settings.isPaused else { return }
+        configureAudio()
+    }
+
+    func setListenEnabled(_ enabled: Bool) {
+        settingsStore.settings.setListenEnabled(enabled)
+        if settingsStore.settings.isPaused { captureHealth = .paused }
+        configureAudio()
+    }
+
+    func setListeningBehavior(_ mode: AudioMode) {
+        settingsStore.settings.setListeningBehavior(mode)
+        configureAudio()
+    }
+
     func configureAudio() {
         guard secureStorageState == .ready else {
             audioCapture.stop()
@@ -265,7 +296,7 @@ final class AppState: ObservableObject {
         guard settingsStore.settings.isAudioActiveNow else {
             audioCapture.stop()
             Task { await systemAudioCapture.stop() }
-            if !settingsStore.settings.isPaused { captureHealth = .observing }
+            if !settingsStore.settings.isPaused { captureHealth = configuredCaptureHealth }
             return
         }
         guard PermissionService.microphoneState() == .granted else {
@@ -276,7 +307,7 @@ final class AppState: ObservableObject {
             try audioCapture.start { @Sendable wavData, duration in
                 await AppState.shared.processAudio(wavData, voicedDuration: duration)
             }
-            captureHealth = .listening
+            captureHealth = configuredCaptureHealth
             if settingsStore.settings.meetingDetectionEnabled, lastScreenContext?.isMeeting == true {
                 Task {
                     try? await systemAudioCapture.start { @Sendable wavData, duration in
@@ -321,7 +352,7 @@ final class AppState: ObservableObject {
             captureHealth = .error(error.localizedDescription)
         }
         if !settingsStore.settings.isPaused {
-            captureHealth = settingsStore.settings.isAudioActiveNow ? .listening : .observing
+            captureHealth = configuredCaptureHealth
         }
     }
 
@@ -507,7 +538,7 @@ final class AppState: ObservableObject {
                 answer = try await ai.answer(
                     question: trimmed,
                     candidates: candidates,
-                    outputLanguage: settingsStore.outputLanguageDescription(),
+                    outputLanguage: settingsStore.outputLanguagePrompt(),
                     apiKey: key
                 )
             } else if let first = candidates.first {
@@ -553,12 +584,7 @@ final class AppState: ObservableObject {
 
     func openMainWindow(section: MainSection? = nil) {
         if let section { selectedSection = section }
-        NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { !($0 is NSPanel) }) {
-            window.makeKeyAndOrderFront(nil)
-        } else {
-            NotificationCenter.default.post(name: .irizOpenMainWindow, object: nil)
-        }
+        NotificationCenter.default.post(name: .irizOpenMainWindow, object: nil)
     }
 
     func testAPIKey(_ candidate: String) async {
@@ -606,7 +632,7 @@ final class AppState: ObservableObject {
             let interpretation = try await ai.interpret(
                 observation: observation,
                 imageData: observation.source == .screen ? mediaData : nil,
-                outputLanguage: settingsStore.outputLanguageDescription(),
+                outputLanguage: settingsStore.outputLanguagePrompt(),
                 apiKey: key
             )
             if interpretation.shouldCreateEvent, let event = interpretation.event {
@@ -678,5 +704,16 @@ final class AppState: ObservableObject {
         if settingsStore.settings.dailyDigestEnabled {
             await notifications.configureDailyDigest(hour: settingsStore.settings.dailyDigestHour, enabled: true)
         }
+    }
+
+    private var configuredCaptureHealth: CaptureHealth {
+        let configured = settingsStore.settings
+        guard !configured.isPaused else { return .paused }
+        if configured.isAudioActiveNow {
+            return configured.screenCaptureEnabled ? .observingAndListening : .listening
+        }
+        if configured.screenCaptureEnabled { return .observing }
+        if configured.audioMode == .schedule { return .scheduled }
+        return .paused
     }
 }

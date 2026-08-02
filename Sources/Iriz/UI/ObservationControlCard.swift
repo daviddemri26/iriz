@@ -43,6 +43,26 @@ extension CaptureHealth {
                 breathes: true,
                 breathingDuration: 2.2
             )
+        case .observingAndListening:
+            IrizStatusAppearance(
+                title: "Iriz is observing and listening",
+                detail: "Screen and spoken context are both active.",
+                symbol: "eye.fill",
+                tint: IrizTheme.violet,
+                badge: "LIVE",
+                breathes: true,
+                breathingDuration: 2.2
+            )
+        case .scheduled:
+            IrizStatusAppearance(
+                title: "Listening is scheduled",
+                detail: "The microphone will start during your schedule.",
+                symbol: "calendar",
+                tint: IrizTheme.violet,
+                badge: "READY",
+                breathes: false,
+                breathingDuration: 2.8
+            )
         case .meeting:
             IrizStatusAppearance(
                 title: "Meeting detected",
@@ -84,6 +104,88 @@ extension CaptureHealth {
                 breathingDuration: 2.8
             )
         }
+    }
+}
+
+struct ObservationChannelsControl: View {
+    enum Presentation {
+        case compact
+        case settings
+    }
+
+    @EnvironmentObject private var app: AppState
+    @EnvironmentObject private var settings: SettingsStore
+    var presentation: Presentation = .compact
+
+    var body: some View {
+        HStack(spacing: presentation == .compact ? 6 : 10) {
+            channelButton(
+                title: "Observe",
+                detail: "Screen",
+                symbol: "eye.fill",
+                tint: IrizTheme.mint,
+                isSelected: app.isObserveEnabled
+            ) {
+                app.setObserveEnabled(!app.isObserveEnabled)
+            }
+            channelButton(
+                title: "Listen",
+                detail: settings.settings.audioMode == .schedule ? "Mic · Scheduled" : "Microphone",
+                symbol: "waveform",
+                tint: IrizTheme.violet,
+                isSelected: app.isListenEnabled
+            ) {
+                app.setListenEnabled(!app.isListenEnabled)
+            }
+        }
+        .opacity(settings.settings.isPaused ? 0.78 : 1)
+    }
+
+    private func channelButton(
+        title: String,
+        detail: String,
+        symbol: String,
+        tint: Color,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: presentation == .compact ? 4 : 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: presentation == .compact ? 11 : 14, weight: .semibold))
+                    .foregroundStyle(isSelected ? tint : Color.secondary)
+                if presentation == .compact {
+                    Text(title)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(.callout.weight(.semibold))
+                        Text(detail).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 2)
+                if presentation == .settings {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isSelected ? tint : Color.secondary)
+                }
+            }
+            .padding(.horizontal, presentation == .compact ? 7 : 12)
+            .frame(maxWidth: .infinity, minHeight: presentation == .compact ? 34 : 50)
+            .background(
+                isSelected ? tint.opacity(0.12) : Color.primary.opacity(0.05),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(isSelected ? tint.opacity(0.34) : Color.primary.opacity(0.06))
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(isSelected ? "On" : "Off")
+        .help("Turn \(title.lowercased()) \(isSelected ? "off" : "on")")
     }
 }
 
@@ -142,14 +244,14 @@ struct ObservationControlCard: View {
                 quickActions
             }
 
-            modePicker
+            ObservationChannelsControl(presentation: .compact)
             pauseButton
             footer
         }
         .padding(13)
         .frame(
             width: placement == .floating ? 264 : nil,
-            height: placement == .floating ? 286 : nil,
+            height: placement == .floating ? 300 : nil,
             alignment: .top
         )
         .background {
@@ -236,24 +338,6 @@ struct ObservationControlCard: View {
                     .tint(IrizTheme.violet)
             }
             .controlSize(.small)
-        }
-    }
-
-    private var modePicker: some View {
-        HStack(spacing: 8) {
-            Text("Mode").font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Picker("Mode", selection: Binding(
-                get: { app.observationMode },
-                set: { app.setObservationMode($0) }
-            )) {
-                ForEach(ObservationMode.allCases) { mode in
-                    Text(mode.displayName).tag(mode)
-                }
-            }
-            .labelsHidden()
-            .controlSize(.small)
-            .frame(maxWidth: 150)
         }
     }
 

@@ -88,6 +88,27 @@ struct IrizCoreTests {
         #expect(ObservationMode.current(for: settings) == .schedule)
     }
 
+    @Test("Observe and Listen share one configuration with Pause as master override")
+    func sharedObservationChannels() {
+        var settings = IrizSettings()
+        settings.isPaused = false
+        settings.setListenEnabled(true)
+        #expect(settings.screenCaptureEnabled)
+        #expect(settings.audioMode == .alwaysOn)
+        #expect(!settings.isPaused)
+
+        settings.isPaused = true
+        settings.setListeningBehavior(.schedule)
+        #expect(settings.audioMode == .schedule)
+        #expect(settings.isPaused)
+
+        settings.setObserveEnabled(false)
+        settings.setListenEnabled(false)
+        #expect(!settings.screenCaptureEnabled)
+        #expect(settings.audioMode == .off)
+        #expect(settings.isPaused)
+    }
+
     @Test("Screen capture never retries while permission is inactive")
     func screenCapturePermissionGate() {
         var settings = IrizSettings()
@@ -164,6 +185,45 @@ struct IrizCoreTests {
         #expect(text.contains("known_speaker_names[]"))
         #expect(text.contains("You"))
         #expect(text.contains("data:audio/wav;base64,"))
+    }
+
+    @Test("Selected speech language guides simple and diarized transcription")
+    func transcriptionLanguageHints() {
+        let simple = OpenAIRequestFactory.transcriptionRequest(
+            wavData: Data([1]),
+            boundary: "SimpleBoundary",
+            model: OpenAIModelPolicy.transcription,
+            languageTag: "he-IL",
+            knownSpeakerReference: nil
+        )
+        let meeting = OpenAIRequestFactory.transcriptionRequest(
+            wavData: Data([1]),
+            boundary: "MeetingBoundary",
+            model: OpenAIModelPolicy.diarizedTranscription,
+            languageTag: "he-IL",
+            knownSpeakerReference: nil
+        )
+        let simpleText = String(decoding: simple, as: UTF8.self)
+        let meetingText = String(decoding: meeting, as: UTF8.self)
+        #expect(simpleText.contains("name=\"languages[]\""))
+        #expect(simpleText.contains("\r\n\r\nhe\r\n"))
+        #expect(meetingText.contains("name=\"language\""))
+        #expect(meetingText.contains("\r\n\r\nhe\r\n"))
+    }
+
+    @MainActor
+    @Test("Selected language is a strong journal and voice hint")
+    func languagePromptGuidance() {
+        let suiteName = "IrizLanguageTests-\(UUID())"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = SettingsStore(defaults: defaults)
+        store.settings.outputLanguageTag = "he-IL"
+        let prompt = store.outputLanguagePrompt()
+        #expect(prompt.contains("he-IL"))
+        #expect(prompt.contains("usual language"))
+        #expect(prompt.contains("meetings"))
+        #expect(prompt.contains("voice sessions"))
     }
 
     @Test("Relative day questions use the exact local calendar day")

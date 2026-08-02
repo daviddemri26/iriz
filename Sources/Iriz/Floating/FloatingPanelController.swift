@@ -89,7 +89,7 @@ final class FloatingPanelController {
     private var dragStartOrigin: NSPoint?
     private var dockEdge: DockEdge = .right
     private let collapsed = NSSize(width: 52, height: 52)
-    private let expanded = NSSize(width: 264, height: 286)
+    private let expanded = NSSize(width: 264, height: 300)
     private let edgeInset: CGFloat = 12
 
     init(app: AppState, settings: SettingsStore) {

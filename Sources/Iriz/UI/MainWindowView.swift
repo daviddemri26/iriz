@@ -7,18 +7,21 @@ struct MainWindowView: View {
     var body: some View {
         Group {
             if settings.settings.hasCompletedOnboarding {
-                HStack(spacing: 0) {
-                    sidebar
-                        .frame(width: 250)
-                    Divider()
-                    detail
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                GeometryReader { geometry in
+                    HStack(spacing: 0) {
+                        sidebar
+                            .frame(width: 250, height: geometry.size.height)
+                        Divider()
+                        detail
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
                 }
             } else {
                 OnboardingView()
             }
         }
-        .frame(minWidth: 900, minHeight: 620)
+        .frame(minWidth: 900, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
         .background(IrizTheme.canvas)
         .task { await app.refresh() }
     }

@@ -116,12 +116,33 @@ struct IrizSettings: Codable, Equatable, Sendable {
         case .schedule: audioSchedule.isActive(at: Date())
         }
     }
+
+    mutating func setObserveEnabled(_ enabled: Bool) {
+        screenCaptureEnabled = enabled
+        if !enabled, audioMode == .off { isPaused = true }
+    }
+
+    mutating func setListenEnabled(_ enabled: Bool) {
+        if enabled {
+            if audioMode == .off { audioMode = .alwaysOn }
+        } else {
+            audioMode = .off
+            if !screenCaptureEnabled { isPaused = true }
+        }
+    }
+
+    mutating func setListeningBehavior(_ mode: AudioMode) {
+        guard mode != .off else { return }
+        audioMode = mode
+    }
 }
 
 enum CaptureHealth: Equatable, Sendable {
     case paused
     case observing
     case listening
+    case observingAndListening
+    case scheduled
     case meeting
     case processing
     case permissionNeeded(String)
@@ -132,6 +153,8 @@ enum CaptureHealth: Equatable, Sendable {
         case .paused: "Paused"
         case .observing: "Observing"
         case .listening: "Listening"
+        case .observingAndListening: "Observing + listening"
+        case .scheduled: "Listening scheduled"
         case .meeting: "Meeting"
         case .processing: "Processing"
         case .permissionNeeded: "Permission needed"

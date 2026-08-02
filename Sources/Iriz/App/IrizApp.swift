@@ -12,6 +12,11 @@ struct IrizApp: App {
             MainWindowView()
                 .environmentObject(app)
                 .environmentObject(settings)
+                .background {
+                    MainWindowResolver { window in
+                        delegate.registerMainWindow(window)
+                    }
+                }
         }
         .defaultSize(width: 1080, height: 720)
         .commands {
@@ -38,22 +43,12 @@ final class IrizAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(mainWindowDidBecomeMain(_:)),
-            name: NSWindow.didBecomeMainNotification,
-            object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self,
             selector: #selector(openMainWindowRequested(_:)),
             name: .irizOpenMainWindow,
             object: nil
         )
         floatingPanel = FloatingPanelController(app: .shared, settings: .shared)
         floatingPanel?.show()
-        DispatchQueue.main.async { [weak self] in
-            guard let window = NSApp.windows.first(where: { !($0 is NSPanel) }) else { return }
-            self?.retainMainWindow(window)
-        }
     }
 
     deinit {
@@ -72,27 +67,56 @@ final class IrizAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldSaveSecureApplicationState(_ app: NSApplication) -> Bool { false }
     func applicationShouldRestoreSecureApplicationState(_ app: NSApplication) -> Bool { false }
 
-    private func retainMainWindow(_ window: NSWindow) {
+    func registerMainWindow(_ window: NSWindow) {
         mainWindow = window
         window.isReleasedWhenClosed = false
         window.isRestorable = false
     }
 
     private func showMainWindow() {
-        if mainWindow == nil, let window = NSApp.windows.first(where: { !($0 is NSPanel) }) {
-            retainMainWindow(window)
-        }
         NSApp.activate(ignoringOtherApps: true)
-        mainWindow?.makeKeyAndOrderFront(nil)
-    }
+        if let mainWindow {
+            mainWindow.makeKeyAndOrderFront(nil)
+            return
+        }
 
-    @objc private func mainWindowDidBecomeMain(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow, !(window is NSPanel) else { return }
-        retainMainWindow(window)
+        // WindowGroup owns creation of the SwiftUI window. Reuse its standard
+        // Command-N action instead of guessing among unrelated system windows.
+        let newWindowItem = NSApp.mainMenu?.items
+            .compactMap(\.submenu)
+            .flatMap(\.items)
+            .first {
+                $0.keyEquivalent.lowercased() == "n" &&
+                $0.keyEquivalentModifierMask.contains(.command)
+            }
+        if let newWindowItem, let action = newWindowItem.action {
+            NSApp.sendAction(action, to: newWindowItem.target, from: newWindowItem)
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.mainWindow?.makeKeyAndOrderFront(nil)
+        }
     }
 
     @objc private func openMainWindowRequested(_ notification: Notification) {
         showMainWindow()
+    }
+}
+
+private struct MainWindowResolver: NSViewRepresentable {
+    let resolve: @MainActor (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { [weak view] in
+            if let window = view?.window { resolve(window) }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { [weak nsView] in
+            if let window = nsView?.window { resolve(window) }
+        }
     }
 }
 

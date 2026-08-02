@@ -346,9 +346,11 @@ enum OpenAIRequestFactory {
                     boundary: boundary
                 )
             }
-        } else if let languageTag, languageTag != "auto" {
+        }
+        if let languageTag, languageTag != "auto" {
             let language = String(languageTag.prefix(2))
-            body.appendMultipart(name: "languages[]", value: language, boundary: boundary)
+            let field = model == OpenAIModelPolicy.transcription ? "languages[]" : "language"
+            body.appendMultipart(name: field, value: language, boundary: boundary)
         }
         body.append("--\(boundary)\r\n")
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"iriz.wav\"\r\n")
