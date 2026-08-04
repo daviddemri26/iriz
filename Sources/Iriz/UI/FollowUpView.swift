@@ -91,8 +91,20 @@ struct FollowUpView: View {
                                 followUpSummary(visibleCount: visibleOpen.count, hiddenCount: hiddenCount)
                             }
                             if selectedTab == .all, selectedContextID == nil {
+                                let priorityItems = displayed.filter(\.commitment.isPriority)
+                                if !priorityItems.isEmpty {
+                                    prioritySectionHeader(count: priorityItems.count)
+                                    ForEach(priorityItems) { rankedCommitment in
+                                        CommitmentCard(
+                                            ranked: rankedCommitment,
+                                            showsPriorityBadge: true
+                                        )
+                                    }
+                                }
                                 ForEach(contextGroups) { group in
-                                    let groupedItems = displayed.filter { group.commitmentIDs.contains($0.id) }
+                                    let groupedItems = displayed.filter {
+                                        group.commitmentIDs.contains($0.id) && !$0.commitment.isPriority
+                                    }
                                     if !groupedItems.isEmpty {
                                         contextSectionHeader(group: group, visibleCount: groupedItems.count)
                                         ForEach(groupedItems) { rankedCommitment in
@@ -240,6 +252,23 @@ struct FollowUpView: View {
         .padding(.top, 8)
     }
 
+    private func prioritySectionHeader(count: Int) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "star.fill")
+                .foregroundStyle(IrizTheme.violet)
+            Text("Priority")
+                .font(.headline)
+            Text("\(count)")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("Marked by you")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 8)
+    }
+
     private func contextSymbol(for label: String) -> String {
         switch label {
         case "Work": "briefcase.fill"
@@ -283,81 +312,126 @@ private struct CommitmentCard: View {
 
     var body: some View {
         SoftCard {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: stateSymbol)
-                    .foregroundStyle(stateTint)
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 7) {
-                        Text(commitment.action).font(.headline)
-                        if ranked.isHighlighted, showsPriorityBadge {
-                            Text("PRIORITY")
-                                .font(.system(size: 8, weight: .bold, design: .rounded))
-                                .tracking(0.6)
-                                .foregroundStyle(IrizTheme.violet)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(IrizTheme.violet.opacity(0.12), in: Capsule())
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 14) {
+                    Image(systemName: stateSymbol)
+                        .foregroundStyle(stateTint)
+                        .frame(width: 20, height: 20)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline, spacing: 7) {
+                            Text(commitment.action)
+                                .font(.headline)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if commitment.isPriority || (ranked.isHighlighted && showsPriorityBadge) {
+                                priorityBadge
+                            }
                         }
-                    }
-                    if !commitment.rationale.isEmpty { Text(commitment.rationale).foregroundStyle(.secondary) }
-                    if let date = commitment.explicitDueAt ?? commitment.suggestedReviewAt {
-                        Label(date.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Label(FollowUpContextGrouper.label(for: commitment, event: sourceEvent), systemImage: "folder")
+                        if !commitment.rationale.isEmpty {
+                            Text(commitment.rationale)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        HStack(spacing: 12) {
+                            if let date = commitment.explicitDueAt ?? commitment.suggestedReviewAt {
+                                Label(date.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
+                            }
+                            Label(FollowUpContextGrouper.label(for: commitment, event: sourceEvent), systemImage: "folder")
+                        }
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
-                    HStack(spacing: 10) {
-                        Text(ranked.reason)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(reasonTint)
-                        if let sourceEvent {
-                            Button {
-                                app.openEvent(sourceEvent.id)
-                            } label: {
-                                Label(sourceEvent.title, systemImage: "arrow.up.forward.square")
-                                    .lineLimit(1)
+                        HStack(spacing: 10) {
+                            Text(ranked.reason)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(reasonTint)
+                            if let sourceEvent {
+                                Button {
+                                    app.openEvent(sourceEvent.id)
+                                } label: {
+                                    Label(sourceEvent.title, systemImage: "arrow.up.forward.square")
+                                        .lineLimit(1)
+                                }
+                                .buttonStyle(.plain)
+                                .font(.caption)
+                                .foregroundStyle(IrizTheme.violet)
                             }
-                            .buttonStyle(.plain)
-                            .font(.caption)
-                            .foregroundStyle(IrizTheme.violet)
                         }
                     }
+                    Spacer(minLength: 8)
                 }
-                Spacer()
-                actions
+                Divider()
+                quickActions
             }
         }
     }
 
-    @ViewBuilder private var actions: some View {
+    private var priorityBadge: some View {
+        Text(commitment.isPriority ? "PRIORITY" : "TOP")
+            .font(.system(size: 8, weight: .bold, design: .rounded))
+            .tracking(0.6)
+            .foregroundStyle(IrizTheme.violet)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(IrizTheme.violet.opacity(0.12), in: Capsule())
+            .fixedSize()
+    }
+
+    @ViewBuilder private var quickActions: some View {
         if ranked.effectiveState == .completed {
-            Label("Resolved", systemImage: "checkmark.seal.fill")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(IrizTheme.mint)
-        } else if ranked.effectiveState == .completionSuggested {
-            VStack(alignment: .trailing, spacing: 7) {
-                Button("Confirm Done") { Task { await app.updateCommitment(commitment, state: .completed) } }
-                    .buttonStyle(.borderedProminent)
-                    .tint(IrizTheme.mint)
-                Button("Keep Open") { Task { await app.updateCommitment(commitment, state: .needsAttention) } }
-                    .buttonStyle(.plain)
-                    .font(.caption)
+            HStack {
+                Label("Resolved", systemImage: "checkmark.seal.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(IrizTheme.mint)
+                Spacer()
             }
         } else {
-            Menu("Snooze") {
-                Button("Tomorrow") { Task { await app.snoozeCommitment(commitment, days: 1) } }
-                Button("Next week") { Task { await app.snoozeCommitment(commitment, days: 7) } }
-                Button("Later, no date") { Task { await app.updateCommitment(commitment, state: .later) } }
-            }
-            Button("Done") { Task { await app.updateCommitment(commitment, state: .completed) } }
-                .buttonStyle(.borderedProminent).tint(IrizTheme.mint)
-            Menu {
-                Button("Waiting") { Task { await app.updateCommitment(commitment, state: .waiting) } }
-                Button("Dismiss") { Task { await app.updateCommitment(commitment, state: .dismissed) } }
-            } label: { Image(systemName: "ellipsis") }
+            HStack(spacing: 8) {
+                Button {
+                    Task { await app.setCommitmentPriority(commitment, isPriority: !commitment.isPriority) }
+                } label: {
+                    Label(commitment.isPriority ? "Prioritized" : "Priority", systemImage: commitment.isPriority ? "star.fill" : "star")
+                }
+                .buttonStyle(.bordered)
+                .tint(IrizTheme.violet)
+                .help(commitment.isPriority ? "Remove manual priority" : "Move this follow-up to the top")
+
+                Button {
+                    Task { await app.updateCommitment(commitment, state: .completed) }
+                } label: {
+                    Label(ranked.effectiveState == .completionSuggested ? "Confirm Done" : "Done", systemImage: "checkmark")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(IrizTheme.mint)
+
+                Button {
+                    Task { await app.updateCommitment(commitment, state: .dismissed) }
+                } label: {
+                    Label("Dismiss", systemImage: "xmark")
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .help("Remove this follow-up from the active list")
+
+                Spacer(minLength: 4)
+
+                Menu {
+                    if ranked.effectiveState == .completionSuggested {
+                        Button("Keep Open") { Task { await app.updateCommitment(commitment, state: .needsAttention) } }
+                        Divider()
+                    }
+                    Button("Waiting for someone or something") {
+                        Task { await app.updateCommitment(commitment, state: .waiting) }
+                    }
+                    Divider()
+                    Button("Snooze until tomorrow") { Task { await app.snoozeCommitment(commitment, days: 1) } }
+                    Button("Snooze until next week") { Task { await app.snoozeCommitment(commitment, days: 7) } }
+                    Button("Move to Later without a date") { Task { await app.updateCommitment(commitment, state: .later) } }
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
                 .menuStyle(.borderlessButton)
-                .frame(width: 24)
+                .fixedSize()
+            }
+            .controlSize(.small)
         }
     }
 

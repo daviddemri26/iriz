@@ -184,6 +184,8 @@ struct IrizSettings: Codable, Equatable, Sendable {
     var dailyDigestEnabled = true
     var dailyDigestHour = 9
     var launchAtLogin = false
+    var showMenuBarItem = true
+    var showFloatingBubble = true
     var excludedBundleIdentifiers: Set<String> = ExclusionPolicy.defaultExcludedBundleIdentifiers
     var excludedDomains: Set<String> = []
 
@@ -245,6 +247,8 @@ struct IrizSettings: Codable, Equatable, Sendable {
         case dailyDigestEnabled
         case dailyDigestHour
         case launchAtLogin
+        case showMenuBarItem
+        case showFloatingBubble
         case excludedBundleIdentifiers
         case excludedDomains
     }
@@ -270,6 +274,8 @@ struct IrizSettings: Codable, Equatable, Sendable {
         dailyDigestEnabled = try values.decodeIfPresent(Bool.self, forKey: .dailyDigestEnabled) ?? true
         dailyDigestHour = try values.decodeIfPresent(Int.self, forKey: .dailyDigestHour) ?? 9
         launchAtLogin = try values.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
+        showMenuBarItem = try values.decodeIfPresent(Bool.self, forKey: .showMenuBarItem) ?? true
+        showFloatingBubble = try values.decodeIfPresent(Bool.self, forKey: .showFloatingBubble) ?? true
         excludedBundleIdentifiers = try values.decodeIfPresent(Set<String>.self, forKey: .excludedBundleIdentifiers)
             ?? ExclusionPolicy.defaultExcludedBundleIdentifiers
         excludedDomains = try values.decodeIfPresent(Set<String>.self, forKey: .excludedDomains) ?? []
@@ -292,6 +298,8 @@ struct IrizSettings: Codable, Equatable, Sendable {
         try values.encode(dailyDigestEnabled, forKey: .dailyDigestEnabled)
         try values.encode(dailyDigestHour, forKey: .dailyDigestHour)
         try values.encode(launchAtLogin, forKey: .launchAtLogin)
+        try values.encode(showMenuBarItem, forKey: .showMenuBarItem)
+        try values.encode(showFloatingBubble, forKey: .showFloatingBubble)
         try values.encode(excludedBundleIdentifiers, forKey: .excludedBundleIdentifiers)
         try values.encode(excludedDomains, forKey: .excludedDomains)
     }
@@ -324,9 +332,9 @@ enum CaptureHealth: Equatable, Sendable {
 }
 
 enum MainSection: String, CaseIterable, Identifiable, Sendable {
-    case journal = "Journal"
-    case followUp = "Follow Up"
     case assistant = "Ask Iriz"
+    case followUp = "Follow Up"
+    case journal = "Journal"
     case settings = "Settings"
 
     var id: String { rawValue }

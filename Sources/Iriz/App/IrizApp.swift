@@ -1,4 +1,5 @@
 @preconcurrency import AppKit
+import Combine
 import SwiftUI
 
 @main
@@ -37,7 +38,10 @@ struct IrizApp: App {
 @MainActor
 final class IrizAppDelegate: NSObject, NSApplicationDelegate {
     private var floatingPanel: FloatingPanelController?
+    private var menuBarController: MenuBarController?
     private var mainWindow: NSWindow?
+    private var floatingVisibilityCancellable: AnyCancellable?
+    private var didSizeMainWindow = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -48,7 +52,13 @@ final class IrizAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
         floatingPanel = FloatingPanelController(app: .shared, settings: .shared)
-        floatingPanel?.show()
+        floatingVisibilityCancellable = SettingsStore.shared.$settings
+            .map(\.showFloatingBubble)
+            .removeDuplicates()
+            .sink { [weak self] isVisible in
+                self?.floatingPanel?.setVisible(isVisible)
+            }
+        menuBarController = MenuBarController(app: .shared, settings: .shared)
         DispatchQueue.main.async { [weak self] in
             self?.showMainWindow()
         }
@@ -74,6 +84,9 @@ final class IrizAppDelegate: NSObject, NSApplicationDelegate {
         mainWindow = window
         window.isReleasedWhenClosed = false
         window.isRestorable = false
+        guard !didSizeMainWindow, let screen = window.screen ?? NSScreen.main else { return }
+        didSizeMainWindow = true
+        window.setFrame(screen.visibleFrame, display: true)
     }
 
     private func showMainWindow() {

@@ -64,6 +64,41 @@ struct IrizCoreTests {
         #expect(!String(decoding: disk, as: UTF8.self).contains("RoadSight"))
     }
 
+    @Test("Assistant conversations persist locally inside the encrypted journal")
+    func encryptedAssistantConversations() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("IrizConversationTests-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try EncryptedSQLiteStore(directory: directory, keyData: Data(repeating: 8, count: 32))
+        let answer = AssistantAnswer(
+            question: "Which hotel did I research?",
+            text: "You researched **Hotel Lumière**.",
+            citations: []
+        )
+        let conversation = AssistantConversation(
+            title: "Paris hotel research",
+            answers: [answer]
+        )
+
+        try await store.saveAssistantConversation(conversation)
+        let restored = try await store.assistantConversations(limit: 10)
+        #expect(restored.first?.id == conversation.id)
+        #expect(restored.first?.answers.first?.text == answer.text)
+
+        let disk = try Data(contentsOf: directory.appendingPathComponent("Iriz.sqlite.iriz"))
+        #expect(!String(decoding: disk, as: UTF8.self).contains("Hotel Lumière"))
+
+        try await store.deleteAssistantConversation(id: conversation.id)
+        #expect(try await store.assistantConversations(limit: 10).isEmpty)
+    }
+
+    @Test("Conversation titles are concise and derived locally")
+    func assistantConversationTitles() {
+        let title = AssistantConversation.title(for: "  What were the important decisions from my customer meetings this week and what should I do next?  ")
+        #expect(title.hasPrefix("What were the important decisions"))
+        #expect(title.hasSuffix("…"))
+        #expect(title.count <= 55)
+    }
+
     @Test("A viewed role is not a completed application")
     func applicationStates() {
         let viewed = Observation(
@@ -175,6 +210,8 @@ struct IrizCoreTests {
         #expect(settings.audioMode == .alwaysOn)
         #expect(settings.captureTiming == .schedule)
         #expect(settings.followUpSensitivity == .balanced)
+        #expect(settings.showMenuBarItem)
+        #expect(settings.showFloatingBubble)
     }
 
     @Test("An overnight schedule follows the selected starting day")
@@ -271,6 +308,31 @@ struct IrizCoreTests {
         #expect(format["strict"] as? Bool == true)
         let reasoning = try #require(json["reasoning"] as? [String: Any])
         #expect(reasoning["effort"] as? String == "none")
+    }
+
+    @Test("Assistant requests include only recent thread context and disable storage")
+    func assistantConversationContextRequest() throws {
+        let previous = (0..<6).map { index in
+            AssistantAnswer(
+                question: "Previous question \(index)",
+                text: "Previous answer \(index)",
+                citations: []
+            )
+        }
+        let data = try OpenAIRequestFactory.answerRequest(
+            question: "And what happened next?",
+            candidates: [],
+            conversationContext: previous,
+            outputLanguage: "English"
+        )
+        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let input = try #require(json["input"] as? String)
+        #expect(json["store"] as? Bool == false)
+        #expect(!input.contains("Previous question 0"))
+        #expect(!input.contains("Previous question 1"))
+        #expect(input.contains("Previous question 2"))
+        #expect(input.contains("Previous question 5"))
+        #expect(input.contains("concise Markdown"))
     }
 
     @Test("Follow-up sensitivity is included in observation guidance")
@@ -516,7 +578,7 @@ struct IrizCoreTests {
         #expect(FollowUpContextGrouper.contextLabels(from: commitments).contains("Work"))
     }
 
-    @Test("Older encrypted commitments decode without a context label")
+    @Test("Older encrypted commitments decode without newer optional metadata")
     func legacyCommitmentContextDecoding() throws {
         let commitment = Commitment(
             eventID: UUID(), owner: "You", action: "Review the document",
@@ -525,11 +587,37 @@ struct IrizCoreTests {
         let encoded = try JSONEncoder().encode(commitment)
         var object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         object.removeValue(forKey: "contextLabel")
+        object.removeValue(forKey: "isPriority")
         let legacyData = try JSONSerialization.data(withJSONObject: object)
         let decoded = try JSONDecoder().decode(Commitment.self, from: legacyData)
 
         #expect(decoded.id == commitment.id)
         #expect(decoded.contextLabel == nil)
+        #expect(!decoded.isPriority)
+    }
+
+    @Test("Manual priority stays visible and ranks ahead of automatic follow-ups")
+    func manualFollowUpPriority() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let event = ActivityEvent(
+            startedAt: now, endedAt: now, kind: .note, status: .observed,
+            importance: .background, title: "Small note", summary: "A small note", confidence: 0.4
+        )
+        let manual = Commitment(
+            eventID: event.id, owner: "You", action: "Keep this visible",
+            isPriority: true, confidence: 0.2, state: .maybe
+        )
+        let automatic = Commitment(
+            eventID: event.id, owner: "You", action: "Automatic follow-up",
+            explicitDueAt: now.addingTimeInterval(-86_400), confidence: 0.99, state: .needsAttention
+        )
+
+        let ranked = FollowUpPrioritizer.ranked(
+            commitments: [automatic, manual], events: [event], sensitivity: .essential, now: now
+        )
+
+        #expect(ranked.first?.id == manual.id)
+        #expect(ranked.first?.reason == "Marked as priority")
     }
 
     @Test("Repeated observations merge the same follow-up instead of duplicating it")

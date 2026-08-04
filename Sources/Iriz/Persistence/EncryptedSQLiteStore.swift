@@ -263,6 +263,46 @@ actor EncryptedSQLiteStore: LogRepository {
         return values
     }
 
+    func saveAssistantConversation(_ conversation: AssistantConversation) async throws {
+        let payload = try encoder.encode(conversation)
+        try execute(
+            """
+            INSERT INTO assistant_conversations (id, updated_at, payload)
+            VALUES (?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                payload = excluded.payload
+            """,
+            [
+                .text(conversation.id.uuidString),
+                .double(conversation.updatedAt.timeIntervalSince1970),
+                .blob(payload)
+            ]
+        )
+        try persist()
+    }
+
+    func assistantConversations(limit: Int = 100) async throws -> [AssistantConversation] {
+        let statement = try prepare(
+            "SELECT payload FROM assistant_conversations ORDER BY updated_at DESC LIMIT ?"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind([.int(Int64(limit))], to: statement)
+        var values: [AssistantConversation] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let data = blob(at: 0, statement: statement),
+               let conversation = try? decoder.decode(AssistantConversation.self, from: data) {
+                values.append(conversation)
+            }
+        }
+        return values
+    }
+
+    func deleteAssistantConversation(id: UUID) async throws {
+        try execute("DELETE FROM assistant_conversations WHERE id = ?", [.text(id.uuidString)])
+        try persist()
+    }
+
     func purgeExpired(now: Date = Date(), retention: StructuredRetention) async throws {
         try transaction {
             try execute("DELETE FROM observations WHERE expires_at <= ?", [.double(now.timeIntervalSince1970)])
@@ -480,5 +520,11 @@ actor EncryptedSQLiteStore: LogRepository {
             payload BLOB NOT NULL
         );
         CREATE INDEX IF NOT EXISTS commitments_state_review ON commitments(state, review_at);
+        CREATE TABLE IF NOT EXISTS assistant_conversations (
+            id TEXT PRIMARY KEY NOT NULL,
+            updated_at REAL NOT NULL,
+            payload BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS assistant_conversations_updated_at ON assistant_conversations(updated_at DESC);
         """
 }

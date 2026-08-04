@@ -3,6 +3,7 @@ import SwiftUI
 struct MainWindowView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var settings: SettingsStore
+    private let primarySections: [MainSection] = [.assistant, .followUp, .journal]
 
     var body: some View {
         Group {
@@ -10,7 +11,7 @@ struct MainWindowView: View {
                 GeometryReader { geometry in
                     HStack(spacing: 0) {
                         sidebar
-                            .frame(width: 250, height: geometry.size.height)
+                            .frame(width: ObservationControlMetrics.sidebarWidth, height: geometry.size.height)
                         Divider()
                         detail
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -27,7 +28,7 @@ struct MainWindowView: View {
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 IrizLogo(size: 32)
                 Text("Iriz").font(.title2.weight(.bold))
@@ -35,15 +36,43 @@ struct MainWindowView: View {
             .padding(.horizontal, 12)
             .padding(.top, 10)
 
-            List(MainSection.allCases, selection: $app.selectedSection) { section in
-                Label(section.rawValue, systemImage: section.symbolName)
-                    .tag(section)
+            VStack(spacing: 5) {
+                ForEach(primarySections) { section in
+                    sidebarButton(for: section)
+                }
             }
-            .listStyle(.sidebar)
+            .padding(.horizontal, 10)
+
+            Spacer(minLength: 8)
+
+            sidebarButton(for: .settings)
+                .padding(.horizontal, 10)
 
             ObservationControlCard(placement: .sidebar)
-                .padding(12)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
         }
+        .background(IrizTheme.canvas)
+    }
+
+    private func sidebarButton(for section: MainSection) -> some View {
+        let isSelected = app.selectedSection == section
+        return Button {
+            app.selectedSection = section
+        } label: {
+            Label(section.rawValue, systemImage: section.symbolName)
+                .font(.callout.weight(isSelected ? .semibold : .medium))
+                .foregroundStyle(Color.primary)
+                .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                .padding(.horizontal, 10)
+                .background(
+                    isSelected ? Color.primary.opacity(0.10) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(isSelected ? "Selected" : "")
     }
 
     @ViewBuilder private var detail: some View {

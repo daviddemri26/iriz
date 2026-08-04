@@ -7,6 +7,11 @@ enum IrizTheme {
     static let violet = Color(red: 0.42, green: 0.30, blue: 0.92)
     static let coral = Color(red: 0.96, green: 0.42, blue: 0.47)
     static let mint = Color(red: 0.20, green: 0.72, blue: 0.62)
+    static let observing = Color(red: 0.16, green: 0.52, blue: 0.96)
+    static let listening = Color(red: 0.92, green: 0.30, blue: 0.64)
+    static let observingAndListening = Color(red: 0.30, green: 0.36, blue: 0.86)
+    static let processing = Color(red: 0.94, green: 0.60, blue: 0.16)
+    static let attention = Color.orange
     static let canvas = Color(nsColor: .windowBackgroundColor)
     static let card = Color(nsColor: .controlBackgroundColor)
     static let gradient = LinearGradient(colors: [violet, coral], startPoint: .topLeading, endPoint: .bottomTrailing)

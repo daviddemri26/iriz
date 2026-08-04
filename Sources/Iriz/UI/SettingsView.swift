@@ -87,6 +87,7 @@ struct SettingsView: View {
         switch selectedCategory {
         case .capture:
             captureSection
+            quickAccessSection
             statusLegendSection
         case .intelligence:
             apiSection
@@ -175,8 +176,8 @@ struct SettingsView: View {
         ) {
             ObservationChannelsControl(presentation: .settings)
             HStack(spacing: 8) {
-                Image(systemName: settings.settings.isPaused ? "pause.circle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(settings.settings.isPaused ? Color.secondary : IrizTheme.mint)
+                Image(systemName: app.captureHealth.irizAppearance.symbol)
+                    .foregroundStyle(app.captureHealth.irizAppearance.tint)
                 Text(settings.settings.isPaused
                      ? "Paused — your Observe and Listen choices are preserved for Resume."
                      : "Current activity — \(app.observationStatusText).")
@@ -225,7 +226,7 @@ struct SettingsView: View {
     private var statusLegendSection: some View {
         SettingsGroup(
             title: "Live Status Legend",
-            subtitle: "The floating logo and both control cards always show what Iriz is doing right now, not whether Always On or Schedule is selected."
+            subtitle: "Every visible Iriz control shows what the app is doing right now, not whether Always On or Schedule is selected."
         ) {
             VStack(alignment: .leading, spacing: 13) {
                 ForEach(IrizStatusLegend.items) { item in
@@ -254,6 +255,44 @@ struct SettingsView: View {
                 }
             }
             Text("Always On and Schedule decide when the selected channels may run. The live status changes only when the activity happening now changes.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Navigation and action buttons stay neutral. Green is reserved for successful or completed actions, so it never means that capture is active.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var quickAccessSection: some View {
+        SettingsGroup(
+            title: "Quick Access",
+            subtitle: "Choose where Iriz controls appear. Both surfaces use the same live state and actions."
+        ) {
+            Toggle(isOn: $settings.settings.showMenuBarItem) {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Menu Bar Icon")
+                        Text("A compact flat Iriz logo with Pause, Observe, Listen, Journal, Follow Up and Ask Iriz.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "menubar.rectangle")
+                }
+            }
+            Toggle(isOn: $settings.settings.showFloatingBubble) {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Floating Bubble")
+                        Text("Shows the breathing logo and expands to the full shared control card on hover.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "circle.circle")
+                }
+            }
+            Text("Both are enabled by default. If you hide both, Iriz remains available from its main window and Dock icon.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -478,7 +517,7 @@ struct SettingsView: View {
     private var privacySection: some View {
         SettingsGroup(title: "Privacy", subtitle: "No Iriz account, analytics, or Iriz server is used in this version.") {
             Label("The encrypted journal, full-text index and semantic ranking stay on this Mac.", systemImage: "lock.shield")
-            Label("Only selected OCR, transcripts and key screenshots are sent directly to OpenAI for interpretation.", systemImage: "arrow.up.forward")
+            Label("Only selected OCR, transcripts, key screenshots, and the current assistant question with recent thread context are sent directly to OpenAI.", systemImage: "arrow.up.forward")
             Text("API requests use store: false. OpenAI may retain API inputs in abuse-monitoring logs for up to 30 days unless your organization is approved for Zero Data Retention. Inform participants before recording audio and obtain jurisdiction-specific legal advice before distributing Iriz.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }

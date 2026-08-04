@@ -88,6 +88,7 @@ enum FollowUpPrioritizer {
         sensitivity: FollowUpSensitivity
     ) -> Bool {
         if commitment.state == .dismissed { return false }
+        if commitment.isPriority { return true }
         if commitment.state == .completed || commitment.state == .completionSuggested { return true }
         return sensitivity.accepts(
             confidence: commitment.confidence,
@@ -136,7 +137,8 @@ enum FollowUpPrioritizer {
         let importanceScore = Double(event?.importance.rawValue ?? 0) * 12
         let confidenceScore = commitment.confidence * 18
         let evidenceScore = min(Double(commitment.linkedEventIDs.count) * 3, 9)
-        return stateScore + timingScore + importanceScore + confidenceScore + evidenceScore
+        let manualPriorityScore = commitment.isPriority ? 1_000.0 : 0
+        return manualPriorityScore + stateScore + timingScore + importanceScore + confidenceScore + evidenceScore
     }
 
     private static func reason(
@@ -145,6 +147,7 @@ enum FollowUpPrioritizer {
         now: Date,
         calendar: Calendar
     ) -> String {
+        if commitment.isPriority, effectiveState != .completed { return "Marked as priority" }
         if effectiveState == .completionSuggested { return "Completion evidence found" }
         if effectiveState == .completed {
             return commitment.rationale.contains("Automatically completed") ? "Completed automatically" : "Completed"

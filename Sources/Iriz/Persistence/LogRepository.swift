@@ -12,6 +12,9 @@ protocol LogRepository: Sendable {
     func deleteEvent(id: UUID) async throws
     func saveCommitment(_ commitment: Commitment) async throws
     func commitments(includingClosed: Bool) async throws -> [Commitment]
+    func saveAssistantConversation(_ conversation: AssistantConversation) async throws
+    func assistantConversations(limit: Int) async throws -> [AssistantConversation]
+    func deleteAssistantConversation(id: UUID) async throws
     func purgeExpired(now: Date, retention: StructuredRetention) async throws
     func eventCount() async throws -> Int
 }

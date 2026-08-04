@@ -28,7 +28,7 @@ extension CaptureHealth {
                 title: "Iriz is observing",
                 detail: "The screen is active right now.",
                 symbol: "eye.fill",
-                tint: IrizTheme.mint,
+                tint: IrizTheme.observing,
                 badge: "LIVE",
                 breathes: true,
                 breathingDuration: 2.8
@@ -38,7 +38,7 @@ extension CaptureHealth {
                 title: "Iriz is listening",
                 detail: "The microphone is active right now.",
                 symbol: "waveform",
-                tint: IrizTheme.violet,
+                tint: IrizTheme.listening,
                 badge: "LIVE",
                 breathes: true,
                 breathingDuration: 2.2
@@ -48,7 +48,7 @@ extension CaptureHealth {
                 title: "Iriz is observing and listening",
                 detail: "Screen and microphone are active right now.",
                 symbol: "eye.fill",
-                tint: IrizTheme.violet,
+                tint: IrizTheme.observingAndListening,
                 badge: "LIVE",
                 breathes: true,
                 breathingDuration: 2.2
@@ -78,7 +78,7 @@ extension CaptureHealth {
                 title: "A moment stood out",
                 detail: "Turning it into searchable memory.",
                 symbol: "sparkles",
-                tint: IrizTheme.violet,
+                tint: IrizTheme.processing,
                 badge: "SAVING",
                 breathes: true,
                 breathingDuration: 1.35
@@ -88,7 +88,7 @@ extension CaptureHealth {
                 title: "Permission needed",
                 detail: "Enable \(permission) to restore context.",
                 symbol: "lock.trianglebadge.exclamationmark.fill",
-                tint: .orange,
+                tint: IrizTheme.attention,
                 badge: "CHECK",
                 breathes: false,
                 breathingDuration: 2.8
@@ -98,7 +98,7 @@ extension CaptureHealth {
                 title: "Iriz needs attention",
                 detail: "Open Settings to review the issue.",
                 symbol: "exclamationmark.triangle.fill",
-                tint: .orange,
+                tint: IrizTheme.attention,
                 badge: "CHECK",
                 breathes: false,
                 breathingDuration: 2.8
@@ -108,8 +108,9 @@ extension CaptureHealth {
 }
 
 enum ObservationControlMetrics {
-    static let floatingWidth: CGFloat = 264
-    static let cardHeight: CGFloat = 300
+    static let floatingWidth: CGFloat = 276
+    static let sidebarWidth: CGFloat = floatingWidth + 24
+    static let cardHeight: CGFloat = 354
 }
 
 struct IrizStatusLegendItem: Identifiable {
@@ -125,16 +126,23 @@ enum IrizStatusLegend {
     static var items: [IrizStatusLegendItem] {[
         IrizStatusLegendItem(
             id: "observe",
-            title: "Mint · Observing",
+            title: "Blue · Observing",
             detail: "The screen is being observed now.",
-            tint: IrizTheme.mint,
+            tint: IrizTheme.observing,
             breathes: true
         ),
         IrizStatusLegendItem(
             id: "listen",
-            title: "Violet · Listening or saving",
-            detail: "The microphone is active, both channels are active, or Iriz is saving a useful moment.",
-            tint: IrizTheme.violet,
+            title: "Pink · Listening",
+            detail: "The microphone is active now.",
+            tint: IrizTheme.listening,
+            breathes: true
+        ),
+        IrizStatusLegendItem(
+            id: "both",
+            title: "Indigo · Observing and listening",
+            detail: "Both the screen and microphone are active now.",
+            tint: IrizTheme.observingAndListening,
             breathes: true
         ),
         IrizStatusLegendItem(
@@ -142,6 +150,13 @@ enum IrizStatusLegend {
             title: "Coral · Meeting",
             detail: "A supported meeting is currently detected.",
             tint: IrizTheme.coral,
+            breathes: true
+        ),
+        IrizStatusLegendItem(
+            id: "processing",
+            title: "Amber · Saving a moment",
+            detail: "Iriz is turning useful evidence into searchable memory.",
+            tint: IrizTheme.processing,
             breathes: true
         ),
         IrizStatusLegendItem(
@@ -155,7 +170,7 @@ enum IrizStatusLegend {
             id: "attention",
             title: "Orange · Attention needed",
             detail: "A permission or another issue needs review.",
-            tint: .orange,
+            tint: IrizTheme.attention,
             breathes: false
         )
     ]}
@@ -175,24 +190,43 @@ struct ObservationChannelsControl: View {
         HStack(spacing: presentation == .compact ? 6 : 10) {
             channelButton(
                 title: "Observe",
-                detail: settings.settings.captureTiming == .schedule ? "Screen · Scheduled" : "Screen",
+                detail: channelDetail(
+                    isSelected: app.isObserveEnabled,
+                    isActive: settings.settings.isScreenCaptureActiveNow && channelsCanBeActiveNow,
+                    source: "Screen"
+                ),
                 symbol: "eye.fill",
-                tint: IrizTheme.mint,
-                isSelected: app.isObserveEnabled
+                tint: IrizTheme.observing,
+                isSelected: app.isObserveEnabled,
+                isActive: settings.settings.isScreenCaptureActiveNow && channelsCanBeActiveNow
             ) {
                 app.setObserveEnabled(!app.isObserveEnabled)
             }
             channelButton(
                 title: "Listen",
-                detail: settings.settings.captureTiming == .schedule ? "Mic · Scheduled" : "Microphone",
+                detail: channelDetail(
+                    isSelected: app.isListenEnabled,
+                    isActive: settings.settings.isAudioActiveNow && channelsCanBeActiveNow,
+                    source: "Microphone"
+                ),
                 symbol: "waveform",
-                tint: IrizTheme.violet,
-                isSelected: app.isListenEnabled
+                tint: IrizTheme.listening,
+                isSelected: app.isListenEnabled,
+                isActive: settings.settings.isAudioActiveNow && channelsCanBeActiveNow
             ) {
                 app.setListenEnabled(!app.isListenEnabled)
             }
         }
         .opacity(settings.settings.isPaused ? 0.78 : 1)
+    }
+
+    private var channelsCanBeActiveNow: Bool {
+        switch app.captureHealth {
+        case .paused, .waitingForSchedule, .permissionNeeded, .error:
+            false
+        case .observing, .listening, .observingAndListening, .meeting, .processing:
+            true
+        }
     }
 
     private func channelButton(
@@ -201,13 +235,14 @@ struct ObservationChannelsControl: View {
         symbol: String,
         tint: Color,
         isSelected: Bool,
+        isActive: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             HStack(spacing: presentation == .compact ? 4 : 10) {
                 Image(systemName: symbol)
                     .font(.system(size: presentation == .compact ? 11 : 14, weight: .semibold))
-                    .foregroundStyle(isSelected ? tint : Color.secondary)
+                    .foregroundStyle(isActive ? tint : Color.secondary)
                 if presentation == .compact {
                     Text(title)
                         .font(.caption.weight(.semibold))
@@ -222,24 +257,32 @@ struct ObservationChannelsControl: View {
                 if presentation == .settings {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(isSelected ? tint : Color.secondary)
+                        .foregroundStyle(isActive ? tint : Color.secondary)
                 }
             }
             .padding(.horizontal, presentation == .compact ? 7 : 12)
             .frame(maxWidth: .infinity, minHeight: presentation == .compact ? 34 : 50)
             .background(
-                isSelected ? tint.opacity(0.12) : Color.primary.opacity(0.05),
+                isActive ? tint.opacity(0.13) : Color.primary.opacity(isSelected ? 0.075 : 0.045),
                 in: RoundedRectangle(cornerRadius: 10, style: .continuous)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(isSelected ? tint.opacity(0.34) : Color.primary.opacity(0.06))
+                    .stroke(isActive ? tint.opacity(0.38) : Color.primary.opacity(isSelected ? 0.14 : 0.06))
             }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
         .accessibilityValue(isSelected ? "On" : "Off")
         .help("Turn \(title.lowercased()) \(isSelected ? "off" : "on")")
+    }
+
+    private func channelDetail(isSelected: Bool, isActive: Bool, source: String) -> String {
+        guard isSelected else { return "\(source) · Off" }
+        if isActive { return "\(source) · Active now" }
+        if settings.settings.isPaused { return "\(source) · Ready after Resume" }
+        if settings.settings.captureTiming == .schedule { return "\(source) · Waiting for schedule" }
+        return "\(source) · Ready"
     }
 }
 
@@ -294,26 +337,29 @@ struct ObservationControlCard: View {
     private var appearance: IrizStatusAppearance { app.captureHealth.irizAppearance }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             draggableHeader
             navigationActions
+            sectionDivider
             captureActionSlot
+            sectionDivider
             ObservationChannelsControl(presentation: .compact)
+            followUpSensitivityControl
             controlRow
             footer
         }
         .padding(13)
         .frame(
-            width: placement == .floating ? ObservationControlMetrics.floatingWidth : nil,
+            width: ObservationControlMetrics.floatingWidth,
             height: ObservationControlMetrics.cardHeight,
             alignment: .top
         )
         .background {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(.ultraThickMaterial)
+                .fill(IrizTheme.card)
                 .overlay {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(appearance.tint.opacity(0.055))
+                        .fill(appearance.tint.opacity(appearance.breathes ? 0.075 : 0.025))
                 }
         }
         .overlay {
@@ -337,37 +383,50 @@ struct ObservationControlCard: View {
     }
 
     private var statusHeader: some View {
-        HStack(spacing: 8) {
-            StatusGlyph(appearance: appearance)
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 8) {
+                StatusGlyph(appearance: appearance)
                 Text(appearance.title)
                     .font(.caption.weight(.semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
+                Spacer(minLength: 4)
+                Text(appearance.badge)
+                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                    .tracking(0.6)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .minimumScaleFactor(0.8)
+                    .foregroundStyle(appearance.tint)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .frame(minWidth: 54)
+                    .background(appearance.tint.opacity(0.12), in: Capsule())
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            HStack(spacing: 8) {
+                Color.clear.frame(width: 34, height: 1)
                 Text(appearance.detail)
                     .font(.system(size: 9.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                    .minimumScaleFactor(0.84)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
             }
-            .layoutPriority(1)
-            Spacer()
-            Text(appearance.badge)
-                .font(.system(size: 8, weight: .bold, design: .rounded))
-                .tracking(0.7)
-                .foregroundStyle(appearance.tint)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .background(appearance.tint.opacity(0.12), in: Capsule())
         }
-        .frame(height: 48)
+        .frame(height: 60, alignment: .top)
+    }
+
+    private var sectionDivider: some View {
+        Divider()
+            .overlay(Color.primary.opacity(0.04))
     }
 
     private var navigationActions: some View {
         HStack(spacing: 6) {
-            ControlShortcut(title: "Ask", symbol: "sparkles", tint: IrizTheme.violet) { app.openMainWindow(section: .assistant) }
-            ControlShortcut(title: "Journal", symbol: "clock.arrow.circlepath", tint: IrizTheme.violet) { app.openMainWindow(section: .journal) }
-            ControlShortcut(title: "Follow Up", symbol: "checklist", tint: IrizTheme.violet) { app.openMainWindow(section: .followUp) }
+            ControlShortcut(title: "Ask", symbol: "sparkles", tint: .primary) { app.openMainWindow(section: .assistant) }
+            ControlShortcut(title: "Follow Up", symbol: "checklist", tint: .primary) { app.openMainWindow(section: .followUp) }
+            ControlShortcut(title: "Journal", symbol: "clock.arrow.circlepath", tint: .primary) { app.openMainWindow(section: .journal) }
         }
         .frame(height: 40)
     }
@@ -378,7 +437,7 @@ struct ObservationControlCard: View {
                 noteEditor
             } else {
                 HStack(spacing: 6) {
-                    ControlShortcut(title: "Mark Moment", symbol: "bookmark.fill", tint: IrizTheme.mint) { Task { await app.markMoment() } }
+                    ControlShortcut(title: "Mark Moment", symbol: "bookmark.fill", tint: .primary) { Task { await app.markMoment() } }
                     ControlShortcut(title: "Add Note", symbol: "square.and.pencil", tint: .secondary) {
                         isAddingNote = true
                         interactionChanged?(true)
@@ -416,6 +475,48 @@ struct ObservationControlCard: View {
         .controlSize(.small)
     }
 
+    private var followUpSensitivityControl: some View {
+        Menu {
+            ForEach(FollowUpSensitivity.allCases) { sensitivity in
+                Button {
+                    settings.settings.followUpSensitivity = sensitivity
+                } label: {
+                    if settings.settings.followUpSensitivity == sensitivity {
+                        Label(sensitivity.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(sensitivity.displayName)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "dial.medium")
+                    .font(.caption.weight(.semibold))
+                Text("Follow Up sensitivity")
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 6)
+                Text(settings.settings.followUpSensitivity.displayName)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.primary.opacity(0.075))
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .frame(height: 34)
+        .help("Change how selective Iriz is when showing follow-ups")
+        .accessibilityLabel("Follow Up sensitivity")
+        .accessibilityValue(settings.settings.followUpSensitivity.displayName)
+    }
+
     private var controlRow: some View {
         HStack(spacing: 6) {
             pauseButton
@@ -441,6 +542,7 @@ struct ObservationControlCard: View {
             HStack(spacing: 8) {
                 Image(systemName: settings.settings.isPaused ? "play.fill" : "pause.fill")
                     .font(.caption.weight(.bold))
+                    .foregroundStyle(appearance.tint)
                 Text(settings.settings.isPaused ? "Resume Iriz" : "Pause Iriz")
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
@@ -448,15 +550,8 @@ struct ObservationControlCard: View {
             }
             .padding(.horizontal, 11)
             .frame(maxWidth: .infinity, minHeight: 34)
-            .foregroundStyle(settings.settings.isPaused ? Color.white : Color.primary)
-            .background {
-                if settings.settings.isPaused {
-                    IrizTheme.gradient
-                } else {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.primary.opacity(0.075))
-                }
-            }
+            .foregroundStyle(Color.primary)
+            .background(Color.primary.opacity(0.075), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)

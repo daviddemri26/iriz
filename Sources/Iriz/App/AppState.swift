@@ -26,7 +26,9 @@ final class AppState: ObservableObject {
     @Published private(set) var events: [ActivityEvent] = []
     @Published private(set) var commitments: [Commitment] = []
     @Published private(set) var resolvedCommitments: [Commitment] = []
-    @Published private(set) var assistantHistory: [AssistantAnswer] = []
+    @Published private(set) var assistantConversations: [AssistantConversation] = []
+    @Published private(set) var selectedAssistantConversationID: UUID?
+    @Published private(set) var pendingAssistantTurn: PendingAssistantTurn?
     @Published private(set) var captureHealth: CaptureHealth = .paused
     @Published private(set) var pendingCount = 0
     @Published private(set) var latestInsight: ActivityEvent?
@@ -51,6 +53,7 @@ final class AppState: ObservableObject {
     private var maintenanceTask: Task<Void, Never>?
     private var lastScreenJPEG: Data?
     private var lastScreenContext: ActiveContext?
+    private var isComposingNewAssistantConversation = false
 
     init(ai: any AIProviding = OpenAIClient()) {
         self.ai = ai
@@ -190,6 +193,7 @@ final class AppState: ObservableObject {
             async let eventValues = repository.events(limit: 500, importantOnly: false)
             async let commitmentValues = repository.commitments(includingClosed: true)
             async let pendingValues = repository.pendingObservations(limit: 500)
+            async let conversationValues = repository.assistantConversations(limit: 100)
             events = try await eventValues
             let allCommitments = try await commitmentValues
             commitments = allCommitments.filter { $0.state != .completed && $0.state != .dismissed }
@@ -199,6 +203,11 @@ final class AppState: ObservableObject {
                 .prefix(100)
                 .map { $0 }
             pendingCount = try await pendingValues.count
+            assistantConversations = try await conversationValues
+            if !isComposingNewAssistantConversation,
+               selectedAssistantConversationID == nil || !assistantConversations.contains(where: { $0.id == selectedAssistantConversationID }) {
+                selectedAssistantConversationID = assistantConversations.first?.id
+            }
             latestInsight = events.first(where: { $0.importance >= .important })
         } catch {
             storageError = error.localizedDescription
@@ -540,18 +549,75 @@ final class AppState: ObservableObject {
         await addNote(text)
     }
 
+    var selectedAssistantConversation: AssistantConversation? {
+        guard let selectedAssistantConversationID else { return nil }
+        return assistantConversations.first(where: { $0.id == selectedAssistantConversationID })
+    }
+
+    var assistantHistory: [AssistantAnswer] {
+        selectedAssistantConversation?.answers ?? []
+    }
+
+    func startNewAssistantConversation() {
+        isComposingNewAssistantConversation = true
+        selectedAssistantConversationID = nil
+    }
+
+    func selectAssistantConversation(_ id: UUID) {
+        guard assistantConversations.contains(where: { $0.id == id }) else { return }
+        isComposingNewAssistantConversation = false
+        selectedAssistantConversationID = id
+    }
+
+    func deleteAssistantConversation(_ id: UUID) async {
+        guard let repository, pendingAssistantTurn?.conversationID != id else { return }
+        try? await repository.deleteAssistantConversation(id: id)
+        assistantConversations.removeAll(where: { $0.id == id })
+        if selectedAssistantConversationID == id {
+            selectedAssistantConversationID = assistantConversations.first?.id
+        }
+        if assistantConversations.isEmpty {
+            isComposingNewAssistantConversation = true
+            selectedAssistantConversationID = nil
+        }
+    }
+
     func ask(_ question: String) async {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let searchService else { return }
+        guard !trimmed.isEmpty, !isAsking, let searchService, let repository else { return }
+
+        var conversation = selectedAssistantConversation ?? AssistantConversation(
+            title: AssistantConversation.title(for: trimmed)
+        )
+        let conversationID = conversation.id
+        if conversation.answers.isEmpty {
+            conversation.title = AssistantConversation.title(for: trimmed)
+        }
+        conversation.updatedAt = Date()
+        isComposingNewAssistantConversation = false
+        selectedAssistantConversationID = conversationID
+        upsertAssistantConversation(conversation)
+        try? await repository.saveAssistantConversation(conversation)
+
+        let previousAnswers = conversation.answers
+        let retrievalQuery = (previousAnswers.suffix(2).map(\.question) + [trimmed]).joined(separator: " ")
+        pendingAssistantTurn = PendingAssistantTurn(conversationID: conversationID, question: trimmed)
         isAsking = true
-        defer { isAsking = false }
+        defer {
+            isAsking = false
+            if pendingAssistantTurn?.conversationID == conversationID {
+                pendingAssistantTurn = nil
+            }
+        }
+
+        let answer: AssistantAnswer
         do {
-            let candidates = try await searchService.candidates(for: trimmed)
-            let answer: AssistantAnswer
+            let candidates = try await searchService.candidates(for: retrievalQuery)
             if let key = try settingsStore.apiKey() {
                 answer = try await ai.answer(
                     question: trimmed,
                     candidates: candidates,
+                    conversationContext: Array(previousAnswers.suffix(4)),
                     outputLanguage: settingsStore.outputLanguagePrompt(),
                     apiKey: key
                 )
@@ -565,16 +631,38 @@ final class AppState: ObservableObject {
             } else {
                 answer = AssistantAnswer(question: trimmed, text: "No matching evidence was found.", citations: [])
             }
-            assistantHistory.append(answer)
         } catch {
-            assistantHistory.append(AssistantAnswer(question: trimmed, text: error.localizedDescription, citations: []))
+            answer = AssistantAnswer(question: trimmed, text: error.localizedDescription, citations: [])
         }
+
+        conversation.answers.append(answer)
+        conversation.updatedAt = Date()
+        upsertAssistantConversation(conversation)
+        try? await repository.saveAssistantConversation(conversation)
+    }
+
+    private func upsertAssistantConversation(_ conversation: AssistantConversation) {
+        if let index = assistantConversations.firstIndex(where: { $0.id == conversation.id }) {
+            assistantConversations[index] = conversation
+        } else {
+            assistantConversations.append(conversation)
+        }
+        assistantConversations.sort { $0.updatedAt > $1.updatedAt }
     }
 
     func updateCommitment(_ value: Commitment, state: CommitmentState) async {
         guard let repository else { return }
         var updated = value
         updated.state = state
+        updated.updatedAt = Date()
+        try? await repository.saveCommitment(updated)
+        await refresh()
+    }
+
+    func setCommitmentPriority(_ value: Commitment, isPriority: Bool) async {
+        guard let repository else { return }
+        var updated = value
+        updated.isPriority = isPriority
         updated.updatedAt = Date()
         try? await repository.saveCommitment(updated)
         await refresh()

@@ -48,6 +48,17 @@ final class FloatingCapsuleModel: ObservableObject {
         }
     }
 
+    func collapse() {
+        openTask?.cancel()
+        closeTask?.cancel()
+        actionsTask?.cancel()
+        isPointerInside = false
+        isInteractionActive = false
+        actionsEnabled = false
+        isExpanded = false
+        resize?(false)
+    }
+
     func dragChanged() {
         let point = NSEvent.mouseLocation
         if !isDragging {
@@ -87,7 +98,7 @@ final class FloatingPanelController {
     private let model = FloatingCapsuleModel()
     private var dragStartMouse: NSPoint?
     private var dragStartOrigin: NSPoint?
-    private var dockEdge: DockEdge = .right
+    private var dockEdge: DockEdge = .left
     private let collapsed = NSSize(width: 52, height: 52)
     private let expanded = NSSize(
         width: ObservationControlMetrics.floatingWidth,
@@ -126,8 +137,13 @@ final class FloatingPanelController {
         restorePosition()
     }
 
-    func show() {
-        panel.orderFrontRegardless()
+    func setVisible(_ isVisible: Bool) {
+        if isVisible {
+            panel.orderFrontRegardless()
+        } else {
+            model.collapse()
+            panel.orderOut(nil)
+        }
     }
 
     private func resize(expanded isExpanded: Bool) {
@@ -199,14 +215,20 @@ final class FloatingPanelController {
         let key = screenKey(screen)
         if let savedEdge = UserDefaults.standard.string(forKey: "\(key).edge"), let edge = DockEdge(rawValue: savedEdge) {
             dockEdge = edge
+        } else if let legacyX = (UserDefaults.standard.array(forKey: key) as? [NSNumber])?.first?.doubleValue {
+            dockEdge = legacyX < Double(bounds.midX) ? .left : .right
         } else {
-            let legacy = UserDefaults.standard.array(forKey: key) as? [NSNumber]
-            dockEdge = (legacy?.first?.doubleValue ?? Double(bounds.midX)) < Double(bounds.midX) ? .left : .right
+            dockEdge = .left
         }
         let ratioKey = "\(key).verticalRatio"
-        let ratio = UserDefaults.standard.object(forKey: ratioKey) == nil ? 0.5 : UserDefaults.standard.double(forKey: ratioKey)
         let x = dockEdge == .left ? bounds.minX + edgeInset : bounds.maxX - collapsed.width - edgeInset
-        let proposedY = bounds.minY + bounds.height * ratio - collapsed.height / 2
+        let proposedY: CGFloat
+        if UserDefaults.standard.object(forKey: ratioKey) == nil {
+            proposedY = bounds.minY + edgeInset
+        } else {
+            let ratio = UserDefaults.standard.double(forKey: ratioKey)
+            proposedY = bounds.minY + bounds.height * ratio - collapsed.height / 2
+        }
         let origin = NSPoint(x: x, y: clampedY(proposedY, height: collapsed.height, in: bounds))
         panel.setFrame(NSRect(origin: origin, size: collapsed), display: false)
     }

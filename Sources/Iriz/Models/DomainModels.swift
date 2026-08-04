@@ -252,6 +252,7 @@ struct Commitment: Codable, Identifiable, Hashable, Sendable {
     var explicitDueAt: Date?
     var suggestedReviewAt: Date?
     var contextLabel: String?
+    var isPriority: Bool
     var confidence: Double
     var state: CommitmentState
     var linkedEventIDs: [UUID]
@@ -267,6 +268,7 @@ struct Commitment: Codable, Identifiable, Hashable, Sendable {
         explicitDueAt: Date? = nil,
         suggestedReviewAt: Date? = nil,
         contextLabel: String? = nil,
+        isPriority: Bool = false,
         confidence: Double,
         state: CommitmentState,
         linkedEventIDs: [UUID] = [],
@@ -281,6 +283,7 @@ struct Commitment: Codable, Identifiable, Hashable, Sendable {
         self.explicitDueAt = explicitDueAt
         self.suggestedReviewAt = suggestedReviewAt
         self.contextLabel = contextLabel
+        self.isPriority = isPriority
         self.confidence = min(max(confidence, 0), 1)
         self.state = state
         self.linkedEventIDs = linkedEventIDs
@@ -297,6 +300,7 @@ struct Commitment: Codable, Identifiable, Hashable, Sendable {
         case explicitDueAt
         case suggestedReviewAt
         case contextLabel
+        case isPriority
         case confidence
         case state
         case linkedEventIDs
@@ -314,6 +318,7 @@ struct Commitment: Codable, Identifiable, Hashable, Sendable {
         explicitDueAt = try values.decodeIfPresent(Date.self, forKey: .explicitDueAt)
         suggestedReviewAt = try values.decodeIfPresent(Date.self, forKey: .suggestedReviewAt)
         contextLabel = try values.decodeIfPresent(String.self, forKey: .contextLabel)
+        isPriority = try values.decodeIfPresent(Bool.self, forKey: .isPriority) ?? false
         confidence = min(max(try values.decode(Double.self, forKey: .confidence), 0), 1)
         state = try values.decode(CommitmentState.self, forKey: .state)
         linkedEventIDs = try values.decodeIfPresent([UUID].self, forKey: .linkedEventIDs) ?? []
@@ -331,6 +336,7 @@ struct Commitment: Codable, Identifiable, Hashable, Sendable {
         try values.encodeIfPresent(explicitDueAt, forKey: .explicitDueAt)
         try values.encodeIfPresent(suggestedReviewAt, forKey: .suggestedReviewAt)
         try values.encodeIfPresent(contextLabel, forKey: .contextLabel)
+        try values.encode(isPriority, forKey: .isPriority)
         try values.encode(confidence, forKey: .confidence)
         try values.encode(state, forKey: .state)
         try values.encode(linkedEventIDs, forKey: .linkedEventIDs)
@@ -384,6 +390,44 @@ struct AssistantAnswer: Codable, Identifiable, Sendable {
         self.citations = citations
         self.createdAt = createdAt
     }
+}
+
+struct AssistantConversation: Codable, Identifiable, Sendable {
+    var id: UUID
+    var title: String
+    var answers: [AssistantAnswer]
+    var createdAt: Date
+    var updatedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        title: String = "New conversation",
+        answers: [AssistantAnswer] = [],
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.title = title
+        self.answers = answers
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    static func title(for firstQuestion: String) -> String {
+        let singleLine = firstQuestion
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !singleLine.isEmpty else { return "New conversation" }
+        let prefix = String(singleLine.prefix(54))
+        return prefix.count < singleLine.count ? "\(prefix)…" : prefix
+    }
+}
+
+struct PendingAssistantTurn: Identifiable, Equatable, Sendable {
+    var id: UUID = UUID()
+    var conversationID: UUID
+    var question: String
+    var startedAt: Date = Date()
 }
 
 struct InterpretedObservation: Codable, Sendable {

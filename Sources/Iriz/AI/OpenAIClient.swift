@@ -76,6 +76,7 @@ protocol AIProviding: Sendable {
     func answer(
         question: String,
         candidates: [ActivityEvent],
+        conversationContext: [AssistantAnswer],
         outputLanguage: String,
         apiKey: String
     ) async throws -> AssistantAnswer
@@ -200,12 +201,14 @@ actor OpenAIClient: AIProviding {
     func answer(
         question: String,
         candidates: [ActivityEvent],
+        conversationContext: [AssistantAnswer],
         outputLanguage: String,
         apiKey: String
     ) async throws -> AssistantAnswer {
         let body = try OpenAIRequestFactory.answerRequest(
             question: question,
             candidates: candidates,
+            conversationContext: conversationContext,
             outputLanguage: outputLanguage
         )
         let data = try await post(path: "responses", body: body, apiKey: apiKey)
@@ -386,6 +389,7 @@ enum OpenAIRequestFactory {
     static func answerRequest(
         question: String,
         candidates: [ActivityEvent],
+        conversationContext: [AssistantAnswer] = [],
         outputLanguage: String
     ) throws -> Data {
         let policy = OpenAIModelPolicy.assistantConfiguration(
@@ -404,11 +408,20 @@ enum OpenAIRequestFactory {
                 "status": event.status.rawValue
             ]
         }
+        let previousTurns = conversationContext.suffix(4).map { answer -> [String: String] in
+            [
+                "question": String(answer.question.prefix(500)),
+                "answer": String(answer.text.prefix(1_500))
+            ]
+        }
         let prompt = """
         Answer the user's question using only the candidate Iriz events below. Write in \(outputLanguage).
-        Be conversational and precise. If the evidence does not establish an action, say \"No matching evidence was found\".
+        Be conversational and precise. Use concise Markdown when it improves readability: short paragraphs, **bold** key facts, and compact lists.
+        Previous turns are conversational context for follow-up wording only; they are not evidence. Every factual claim must still be supported by a candidate event.
+        If the evidence does not establish an action, say \"No matching evidence was found\".
         Include only IDs for events that directly support the answer. Never invent a URL, company, date, or action.
 
+        Previous turns in this conversation: \(try jsonString(previousTurns))
         Question: \(question)
         Candidate events: \(try jsonString(context))
         """
