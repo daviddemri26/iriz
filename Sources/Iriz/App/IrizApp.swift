@@ -9,7 +9,7 @@ struct IrizApp: App {
     @StateObject private var settings = SettingsStore.shared
 
     var body: some Scene {
-        Window("Iriz", id: "main") {
+        Window("iriz", id: "main") {
             MainWindowView()
                 .environmentObject(app)
                 .environmentObject(settings)
@@ -24,11 +24,11 @@ struct IrizApp: App {
         .commands {
             CommandGroup(replacing: .newItem) { }
             CommandGroup(after: .appInfo) {
-                Button(settings.settings.isPaused ? "Resume Iriz" : "Pause Iriz") {
+                Button(settings.settings.isPaused ? "Resume iriz" : "Pause iriz") {
                     app.setPaused(!settings.settings.isPaused)
                 }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
-                Button("Ask Iriz") { app.openMainWindow(section: .assistant) }
+                Button("Ask iriz") { app.openMainWindow(section: .assistant) }
                     .keyboardShortcut("k", modifiers: [.command])
             }
         }

@@ -19,7 +19,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Settings").font(.largeTitle.weight(.bold))
-                    Text("Iriz is local first. You decide what it can observe and what leaves your Mac.")
+                    Text("iriz is local first. You decide what it can observe and what leaves your Mac.")
                         .foregroundStyle(.secondary)
                 }
                 Picker("Settings category", selection: $app.selectedSettingsCategory) {
@@ -72,13 +72,13 @@ struct SettingsView: View {
         } message: {
             Text("The export can contain private event details and URLs. Raw screenshots, audio and API keys are never included.")
         }
-        .alert("Reset Follow Up?", isPresented: $isConfirmingFollowUpReset) {
+        .alert("Reset Actions?", isPresented: $isConfirmingFollowUpReset) {
             Button("Cancel", role: .cancel) {}
-            Button("Reset Follow Up", role: .destructive) {
+            Button("Reset Actions", role: .destructive) {
                 Task { await app.resetFollowUps() }
             }
         } message: {
-            Text("This clears every follow-up and subject, but keeps your memory data, media, conversations, API key, and settings.")
+            Text("This clears every Action and subject, but keeps your memory data, media, conversations, API key, and settings.")
         }
     }
 
@@ -222,13 +222,13 @@ struct SettingsView: View {
     private var quickAccessSection: some View {
         SettingsGroup(
             title: "Quick Access",
-            subtitle: "Choose where Iriz controls appear. Both surfaces use the same live state and actions."
+            subtitle: "Choose where iriz controls appear. Both surfaces use the same live state and actions."
         ) {
             Toggle(isOn: $settings.settings.showMenuBarItem) {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Menu Bar Icon")
-                        Text("A compact flat Iriz logo with Pause, Observe, Listen, Follow Up and Ask Iriz.")
+                        Text("A compact flat iriz logo with Pause, Observe, Listen, Actions and Ask iriz.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -240,7 +240,7 @@ struct SettingsView: View {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Floating Bubble")
-                        Text("Shows the live Iriz indicator and expands to the full shared control card on hover.")
+                        Text("Shows the live iriz indicator and expands to the full shared control card on hover.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -248,7 +248,7 @@ struct SettingsView: View {
                     Image(systemName: "circle.circle")
                 }
             }
-            Text("Both are enabled by default. If you hide both, Iriz remains available from its main window and Dock icon.")
+            Text("Both are enabled by default. If you hide both, iriz remains available from its main window and Dock icon.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -256,8 +256,8 @@ struct SettingsView: View {
 
     private var followUpDetailLevelSection: some View {
         SettingsGroup(
-            title: "Follow Up Detail",
-            subtitle: "Choose how broadly or precisely Iriz turns the same captured context into future follow-ups."
+            title: "Action Detail",
+            subtitle: "Choose how broadly or precisely iriz turns captured context into new Actions."
         ) {
             ViewThatFits(in: .horizontal) {
                 Picker("Detail level", selection: $settings.settings.followUpDetailLevel) {
@@ -276,19 +276,19 @@ struct SettingsView: View {
             }
             Text(settings.settings.followUpDetailLevel.description)
                 .font(.callout)
-            Text("Iriz keeps observing the same context. This setting applies only when a new tile is created; existing tiles keep the scope and wording of their original level.")
+            Text("iriz keeps observing the same context. This setting applies only when a new Action is created; existing Actions keep the scope and wording of their original level.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Divider()
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Start with a clean Follow Up workspace")
-                    Text("Clears follow-ups and subjects only. Memory history is preserved.")
+                    Text("Start with a clean Actions workspace")
+                    Text("Clears Actions and subjects only. Memory history is preserved.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Reset Follow Up…", role: .destructive) {
+                Button("Reset Actions…", role: .destructive) {
                     isConfirmingFollowUpReset = true
                 }
             }
@@ -298,13 +298,13 @@ struct SettingsView: View {
     private var languageSection: some View {
         SettingsGroup(
             title: "Language",
-            subtitle: "The interface stays in American English. This language guides memory summaries and helps Iriz understand meetings and voice sessions."
+            subtitle: "The interface stays in American English. This language guides memory summaries and helps iriz understand meetings and voice sessions."
         ) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Memory & speech language")
-                        Text("Iriz treats this as your usual language, not a restriction when another language is clearly spoken.")
+                        Text("iriz treats this as your usual language, not a restriction when another language is clearly spoken.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -327,7 +327,7 @@ struct SettingsView: View {
     private var memorySection: some View {
         SettingsGroup(
             title: "Memory & Retention",
-            subtitle: "Choose how long useful structured memories remain and when Iriz gives you a quiet recap."
+            subtitle: "Choose how long useful structured memories remain and when iriz gives you a quiet recap."
         ) {
             Picker("Keep events and useful transcripts", selection: $settings.settings.structuredRetention) {
                 ForEach(StructuredRetention.allCases, id: \.self) { Text($0.displayName).tag($0) }
@@ -338,7 +338,7 @@ struct SettingsView: View {
                 }
             }
             Toggle("Show one quiet daily summary", isOn: $settings.settings.dailyDigestEnabled)
-            Toggle("Launch Iriz at login", isOn: Binding(
+            Toggle("Launch iriz at login", isOn: Binding(
                 get: { settings.settings.launchAtLogin },
                 set: { enabled in
                     do { try settings.setLaunchAtLogin(enabled) } catch { message = error.localizedDescription }
@@ -493,10 +493,10 @@ struct SettingsView: View {
     }
 
     private var privacySection: some View {
-        SettingsGroup(title: "Privacy", subtitle: "No Iriz account, analytics, or Iriz server is used in this version.") {
+        SettingsGroup(title: "Privacy", subtitle: "No iriz account, analytics, or iriz server is used in this version.") {
             Label("The encrypted memory, full-text index and semantic ranking stay on this Mac.", systemImage: "lock.shield")
             Label("Only selected OCR, transcripts, key screenshots, and the current assistant question with recent thread context are sent directly to OpenAI.", systemImage: "arrow.up.forward")
-            Text("API requests use store: false. OpenAI may retain API inputs in abuse-monitoring logs for up to 30 days unless your organization is approved for Zero Data Retention. Inform participants before recording audio and obtain jurisdiction-specific legal advice before distributing Iriz.")
+            Text("API requests use store: false. OpenAI may retain API inputs in abuse-monitoring logs for up to 30 days unless your organization is approved for Zero Data Retention. Inform participants before recording audio and obtain jurisdiction-specific legal advice before distributing iriz.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }

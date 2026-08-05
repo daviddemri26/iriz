@@ -132,7 +132,7 @@ enum FollowUpPrioritizer {
         let eventsByID = Dictionary(events.map { ($0.id, $0) }) { lhs, rhs in
             lhs.updatedAt >= rhs.updatedAt ? lhs : rhs
         }
-        // Granularity controls how future follow-ups are created. It must never
+        // Granularity controls how future Actions are created. It must never
         // hide or retroactively reshape items that already exist.
         let visibleCommitments = commitments.filter { $0.state != .dismissed }
         let evaluated = visibleCommitments.map { commitment -> (Commitment, CommitmentState, Double, String) in
@@ -240,7 +240,7 @@ enum FollowUpPrioritizer {
         }
         return switch effectiveState {
         case .completionSuggested: "Completion evidence found"
-        case .needsAttention: "Ready for follow-up"
+        case .needsAttention: "Ready for action"
         case .waiting: "Waiting for evidence"
         case .later: "Saved for later"
         case .maybe: "Needs confirmation"

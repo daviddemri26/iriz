@@ -18,9 +18,9 @@ enum SQLiteStoreError: LocalizedError {
             "SQLite error \(code): \(message)\(sql.map { " while running \($0)" } ?? "")"
         case .serializationFailed: "Local memory could not be encrypted."
         case .invalidStoredData: "Encrypted memory could not be decoded."
-        case .invalidCommitment(let reason): "The follow-up could not be saved: \(reason)"
-        case .invalidFollowUpSubject(let reason): "The follow-up subject could not be saved: \(reason)"
-        case .invalidFollowUpType(let reason): "The follow-up type could not be saved: \(reason)"
+        case .invalidCommitment(let reason): "The Action could not be saved: \(reason)"
+        case .invalidFollowUpSubject(let reason): "The Action subject could not be saved: \(reason)"
+        case .invalidFollowUpType(let reason): "The Action type could not be saved: \(reason)"
         }
     }
 }

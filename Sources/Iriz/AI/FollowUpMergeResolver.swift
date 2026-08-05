@@ -36,7 +36,7 @@ enum FollowUpMergeResolver {
             targetID: targetID,
             sourceActions: selection.commitments.map(\.action),
             reason: draft.relationshipReason.isEmpty
-                ? "Iriz could not find a clear connection between these follow-ups."
+                ? "iriz could not find a clear connection between these Actions."
                 : draft.relationshipReason,
             draft: draft
         )
@@ -152,7 +152,7 @@ enum FollowUpMergeResolver {
         merged.history.append(FollowUpHistoryEntry(
             kind: .merged,
             actor: .iriz,
-            summary: "Merged \(all.count) follow-ups: \(titles)",
+            summary: "Merged \(all.count) Actions: \(titles)",
             occurredAt: now
         ))
         return merged
@@ -278,7 +278,7 @@ enum FollowUpMergeResolver {
             groups.append(lines.joined(separator: "\n"))
         }
         guard !groups.isEmpty else { return nil }
-        return (["Merged source follow-ups:"] + groups).joined(separator: "\n\n")
+        return (["Merged source Actions:"] + groups).joined(separator: "\n\n")
     }
 
     private static func historyOrder(_ lhs: FollowUpHistoryEntry, _ rhs: FollowUpHistoryEntry) -> Bool {

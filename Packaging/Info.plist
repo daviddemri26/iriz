@@ -5,9 +5,9 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en_US</string>
     <key>CFBundleDisplayName</key>
-    <string>Iriz</string>
+    <string>iriz</string>
     <key>CFBundleExecutable</key>
-    <string>Iriz</string>
+    <string>iriz</string>
     <key>CFBundleIdentifier</key>
     <string>com.iriz.memory</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
     <key>CFBundleName</key>
-    <string>Iriz</string>
+    <string>iriz</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -29,11 +29,11 @@
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Iriz observes visual changes to create your private activity journal.</string>
+    <string>iriz observes visual changes to create your private contextual memory.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Iriz listens only when enabled to transcribe useful conversations and commitments.</string>
+    <string>iriz listens only when enabled to transcribe useful conversations and commitments.</string>
     <key>NSRemindersFullAccessUsageDescription</key>
-    <string>Iriz adds follow-ups to Reminders only when you choose Add to Reminders.</string>
+    <string>iriz adds Actions to Reminders only when you choose Add to Reminders.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

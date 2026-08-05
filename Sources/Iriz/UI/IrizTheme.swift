@@ -66,7 +66,7 @@ struct IrizLogo: View {
             radius: castsShadow ? size * 0.15 : 0,
             y: castsShadow ? size * 0.06 : 0
         )
-        .accessibilityLabel("Iriz")
+        .accessibilityLabel("iriz")
     }
 }
 

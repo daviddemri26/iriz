@@ -114,7 +114,7 @@ struct IndicatorPresentation: Equatable, Sendable {
     }
 
     var accessibilityLabel: String {
-        var components = ["Iriz", title]
+        var components = ["iriz", title]
         if let accessibilityActivity, !accessibilityActivity.isEmpty {
             components.append(accessibilityActivity)
         }
@@ -144,7 +144,7 @@ extension CaptureHealth {
         switch self {
         case .paused:
             IndicatorPresentation(
-                title: "Iriz is paused",
+                title: "iriz is paused",
                 detail: "Nothing is being captured.",
                 symbol: "moon.zzz.fill",
                 palette: .neutral,
@@ -153,7 +153,7 @@ extension CaptureHealth {
             )
         case .observing:
             IndicatorPresentation(
-                title: "Iriz is observing",
+                title: "iriz is observing",
                 detail: "The screen is active right now.",
                 symbol: "eye.fill",
                 palette: .observing,
@@ -162,7 +162,7 @@ extension CaptureHealth {
             )
         case .listening:
             IndicatorPresentation(
-                title: "Iriz is listening",
+                title: "iriz is listening",
                 detail: "The microphone is active right now.",
                 symbol: "waveform",
                 palette: .listening,
@@ -171,7 +171,7 @@ extension CaptureHealth {
             )
         case .observingAndListening:
             IndicatorPresentation(
-                title: "Iriz is observing and listening",
+                title: "iriz is observing and listening",
                 detail: "Screen and microphone are active right now.",
                 symbol: "eye.fill",
                 palette: .observingAndListening,
@@ -180,7 +180,7 @@ extension CaptureHealth {
             )
         case .waitingForSchedule:
             IndicatorPresentation(
-                title: "Iriz is waiting",
+                title: "iriz is waiting",
                 detail: "Not observing or listening right now.",
                 symbol: "clock.fill",
                 palette: .neutral,
@@ -208,7 +208,7 @@ extension CaptureHealth {
         case .processing:
             IndicatorPresentation(
                 title: "A useful signal stood out",
-                detail: "Iriz retained meaningful local context.",
+                detail: "iriz retained meaningful local context.",
                 symbol: "sparkles",
                 palette: .observing,
                 badge: "SIGNAL",
@@ -225,7 +225,7 @@ extension CaptureHealth {
             )
         case .error:
             IndicatorPresentation(
-                title: "Iriz needs attention",
+                title: "iriz needs attention",
                 detail: "Open Settings to review the issue.",
                 symbol: "exclamationmark.triangle.fill",
                 palette: .attention,

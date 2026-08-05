@@ -2,7 +2,7 @@
 import AVFoundation
 import SwiftUI
 
-/// A focused, self-contained editor for one follow-up.
+/// A focused, self-contained editor for one Action.
 ///
 /// The surrounding view owns presentation and passes `onClose`; the editor keeps
 /// itself synchronized with `AppState` while preserving in-progress text edits.
@@ -27,9 +27,9 @@ struct FollowUpDetailView: View {
     @State private var activeAudioIdentifier: String?
     @FocusState private var titleIsFocused: Bool
 
-    /// Creates a detail editor that can be presented from any Follow Up surface.
+    /// Creates a detail editor that can be presented from any Actions surface.
     /// `onMerge` can hand off to a custom picker; without it, the built-in merge
-    /// menu offers compatible active follow-ups.
+    /// menu offers compatible active Actions.
     init(
         commitment: Commitment,
         onClose: @escaping () -> Void,
@@ -91,13 +91,13 @@ struct FollowUpDetailView: View {
                 .keyboardShortcut(.cancelAction)
             }
 
-            TextField("Follow-up title", text: actionBinding, axis: .vertical)
+            TextField("Action title", text: actionBinding, axis: .vertical)
                 .textFieldStyle(.plain)
                 .focused($titleIsFocused)
                 .font(.system(size: 22, weight: .bold, design: .rounded))
                 .lineLimit(2...4)
                 .fixedSize(horizontal: false, vertical: true)
-                .accessibilityLabel("Follow-up title")
+                .accessibilityLabel("Action title")
                 .accessibilityAddTraits(.isHeader)
             .padding(.horizontal, 11)
             .padding(.vertical, 9)
@@ -299,7 +299,7 @@ struct FollowUpDetailView: View {
         } else {
             Menu {
                 if mergeCandidates.isEmpty {
-                    Text("No compatible active follow-ups")
+                    Text("No compatible active Actions")
                 } else {
                     Section("Merge with") {
                         ForEach(mergeCandidates.prefix(12)) { candidate in
@@ -382,10 +382,10 @@ struct FollowUpDetailView: View {
     private var detailsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                detailSection("Iriz context", symbol: "sparkles") {
+                detailSection("iriz context", symbol: "sparkles") {
                     Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 10) {
                         informationRow("Displayed priority", "\(draft.priorityScore)/10")
-                        informationRow("Iriz priority", "\(draft.aiPriorityScore)/10")
+                        informationRow("iriz priority", "\(draft.aiPriorityScore)/10")
                         if let subject {
                             informationRow("Learned subject adjustment", signed(subject.priorityBias))
                         }
@@ -438,7 +438,7 @@ struct FollowUpDetailView: View {
                     ContentUnavailableView(
                         "No linked memory sources",
                         systemImage: "doc.text.magnifyingglass",
-                        description: Text("Structured evidence will appear here when Iriz links activity to this follow-up.")
+                        description: Text("Structured evidence will appear here when iriz links activity to this Action.")
                     )
                     .frame(maxWidth: .infinity, minHeight: 280)
                 } else {
@@ -1060,7 +1060,7 @@ struct FollowUpDetailView: View {
             .map { "\($0.summary) · \(fullDate($0.occurredAt))" }
             .joined(separator: "\n")
     }
-    private var originLabel: String { draft.origin == .manual ? "Created by you" : "Created by Iriz" }
+    private var originLabel: String { draft.origin == .manual ? "Created by you" : "Created by iriz" }
 
     private var lifecycleLabel: String {
         switch draft.lifecycle {
@@ -1216,7 +1216,7 @@ private extension FollowUpHistoryActor {
     var displayName: String {
         switch self {
         case .user: "You"
-        case .iriz: "Iriz"
+        case .iriz: "iriz"
         case .system: "System"
         }
     }

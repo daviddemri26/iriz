@@ -45,7 +45,7 @@ struct AssistantView: View {
                         .foregroundStyle(.secondary)
                     Text("Your conversations will appear here.")
                         .font(.callout.weight(.medium))
-                    Text("Each thread keeps its own follow-up context.")
+                    Text("Each thread keeps its own Action context.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -141,7 +141,7 @@ struct AssistantView: View {
     private var conversationHeader: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(app.selectedAssistantConversation?.title ?? "Ask Iriz")
+                Text(app.selectedAssistantConversation?.title ?? "Ask iriz")
                     .font(.title2.weight(.bold))
                     .lineLimit(1)
                 Text("Search your local memory. Only the most relevant evidence and this thread’s recent context are sent for an answer.")
@@ -247,7 +247,7 @@ struct AssistantView: View {
             .buttonStyle(.borderedProminent)
             .tint(IrizTheme.violet)
             .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || app.isAsking)
-            .help(app.isAsking ? "Iriz is answering" : "Send")
+            .help(app.isAsking ? "iriz is answering" : "Send")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
@@ -317,7 +317,7 @@ private struct SuggestedQuestions: View {
             VStack(spacing: 5) {
                 Text("What would you like to remember?")
                     .font(.title2.weight(.semibold))
-                Text("Ask naturally. Iriz searches your memory on this Mac before composing an answer.")
+                Text("Ask naturally. iriz searches your memory on this Mac before composing an answer.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -386,7 +386,7 @@ private struct WaitingForAnswer: View {
                 ProgressView()
                     .controlSize(.small)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Iriz is looking through your memory…")
+                    Text("iriz is looking through your memory…")
                         .font(.callout.weight(.semibold))
                     Text("Searching locally, then preparing a sourced answer.")
                         .font(.caption)

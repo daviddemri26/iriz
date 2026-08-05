@@ -53,7 +53,7 @@ struct FollowUpExportServiceTests {
             for: FollowUpExportPayload(title: "Review draft", notes: "  ", priority: -3)
         )
 
-        #expect(text == "Follow Up\nTitle: Review draft\nPriority: 0/10")
+        #expect(text == "Action\nTitle: Review draft\nPriority: 0/10")
     }
 
     @Test("Reminder due components preserve local calendar values")

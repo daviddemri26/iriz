@@ -96,9 +96,9 @@ enum FollowUpExportError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .emptyTitle:
-            "Add a title before exporting this follow-up."
+            "Add a title before exporting this Action."
         case .remindersAccessDenied:
-            "Iriz does not have access to Reminders. You can allow access in System Settings."
+            "iriz does not have access to Reminders. You can allow access in System Settings."
         case .remindersAccessRestricted:
             "Access to Reminders is restricted on this Mac."
         case .remindersAccessUnavailable:
@@ -155,7 +155,7 @@ final class FollowUpExportService {
     ) -> String {
         let title = payload.title.trimmingCharacters(in: .whitespacesAndNewlines)
         var lines = [
-            "Follow Up",
+            "Action",
             "Title: \(title)",
             "Priority: \(min(max(payload.priority, 0), 10))/10"
         ]

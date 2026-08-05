@@ -160,7 +160,7 @@ struct FollowUpView: View {
     private var header: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("Follow Up")
+                Text("Actions")
                     .font(.largeTitle.weight(.bold))
                 Text("A clear, personal view of what still matters.")
                     .foregroundStyle(.secondary)
@@ -177,12 +177,12 @@ struct FollowUpView: View {
                 Button {
                     isCreating = true
                 } label: {
-                    Label("Add a Manual Follow Up", systemImage: "plus")
+                    Label("Add an Action", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(IrizTheme.violet)
 
-                Text("Iriz usually adds follow-ups for you. Add one yourself if needed.")
+                Text("iriz usually creates Actions for you. Add one yourself when needed.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.trailing)
@@ -273,7 +273,7 @@ struct FollowUpView: View {
                 .lineLimit(1)
         }
         .buttonStyle(.bordered)
-        .help(isCompletedVisible ? "Hide completed follow-ups" : "Show completed follow-ups")
+        .help(isCompletedVisible ? "Hide completed Actions" : "Show completed Actions")
     }
 
     private func viewModePicker(width: CGFloat) -> some View {
@@ -287,7 +287,7 @@ struct FollowUpView: View {
     }
 
     private var searchField: some View {
-        TextField("Search follow-ups", text: $search)
+        TextField("Search Actions", text: $search)
             .textFieldStyle(.roundedBorder)
             .frame(minWidth: 180, idealWidth: 240, maxWidth: 300)
     }
@@ -433,7 +433,7 @@ struct FollowUpView: View {
             ContentUnavailableView(
                 emptyTitle,
                 systemImage: preferences.viewMode == .active ? "square.grid.2x2" : (preferences.viewMode == .snoozed ? "moon.zzz" : "eye.slash"),
-                description: Text("Adjust the filters or create a follow-up manually.")
+                description: Text("Adjust the filters or create an Action manually.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -468,7 +468,7 @@ struct FollowUpView: View {
 
     private var emptyTitle: String {
         switch preferences.viewMode {
-        case .active: "No active follow-ups match"
+        case .active: "No active Actions match"
         case .snoozed: "Nothing is snoozed"
         case .dismissed: "Nothing is dismissed"
         }
@@ -554,7 +554,7 @@ struct FollowUpView: View {
                 ContentUnavailableView(
                     "No recent completions",
                     systemImage: "checkmark.seal",
-                    description: Text("Completed follow-ups stay here for \(preferences.completedRailDuration.displayName).")
+                    description: Text("Completed Actions stay here for \(preferences.completedRailDuration.displayName).")
                 )
             } else {
                 ScrollView {
@@ -635,7 +635,7 @@ struct FollowUpView: View {
 
             if values.isEmpty {
                 ContentUnavailableView(
-                    "No completed follow-ups match",
+                    "No completed Actions match",
                     systemImage: "checkmark.seal",
                     description: Text("This view includes every completion still available under structured retention.")
                 )
@@ -681,7 +681,7 @@ struct FollowUpView: View {
         Picker("Completed by", selection: $completedActor) {
             Text("Everyone").tag(FollowUpCompletionActor?.none)
             Text("You").tag(FollowUpCompletionActor?.some(.user))
-            Text("Iriz").tag(FollowUpCompletionActor?.some(.iriz))
+            Text("iriz").tag(FollowUpCompletionActor?.some(.iriz))
         }
         .pickerStyle(.segmented)
         .labelsHidden()
@@ -1071,7 +1071,7 @@ private struct FollowUpTile: View {
                 .contentShape(Circle())
                 .help(completionButtonHelp)
                 .accessibilityLabel("Mark as done")
-                .accessibilityValue(completionButtonStyle == .suggestedByIriz ? "Suggested by Iriz" : "")
+                .accessibilityValue(completionButtonStyle == .suggestedByIriz ? "Suggested by iriz" : "")
 
                 Menu {
                     Button("Tomorrow") {
@@ -1156,7 +1156,7 @@ private struct FollowUpTile: View {
         case .standard:
             "Mark as done"
         case .suggestedByIriz:
-            "Iriz found evidence that this may be done"
+            "iriz found evidence that this may be done"
         }
     }
 }
@@ -1228,8 +1228,8 @@ private struct NewFollowUpSheet: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Add a Manual Follow Up").font(.title2.weight(.bold))
-                    Text("Iriz usually creates follow-ups automatically. Add one yourself when needed.")
+                    Text("Add an Action").font(.title2.weight(.bold))
+                    Text("iriz usually creates Actions automatically. Add one yourself when needed.")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -1287,7 +1287,7 @@ private struct CustomSnoozeSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Snooze Follow Up").font(.title2.weight(.bold))
+            Text("Snooze Action").font(.title2.weight(.bold))
             Text(commitment.action).foregroundStyle(.secondary)
             DatePicker("Return", selection: $date, in: Date()...)
             HStack {
@@ -1440,7 +1440,7 @@ private struct SubjectEditorRow: View {
                 Image(systemName: "square.stack.3d.up")
             }
             .buttonStyle(.bordered)
-            .help("Merge all active follow-ups in this subject")
+            .help("Merge all active Actions in this subject")
         }
         .padding(12)
         .background(IrizTheme.card.opacity(0.72), in: RoundedRectangle(cornerRadius: 12))

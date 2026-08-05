@@ -174,7 +174,7 @@ final class AppState: ObservableObject {
             searchService = nil
             if let keychainError = error as? KeychainStoreError, keychainError.requiresUserApproval {
                 secureStorageState = .needsApproval
-                storageError = "Iriz needs one explicit Keychain approval before it can open your encrypted memory."
+                storageError = "iriz needs one explicit Keychain approval before it can open your encrypted memory."
                 captureHealth = .permissionNeeded("Keychain access")
             } else {
                 secureStorageState = .unavailable(error.localizedDescription)
@@ -891,7 +891,7 @@ final class AppState: ObservableObject {
         guard let repository else { return nil }
         let cleanAction = action.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanAction.isEmpty else {
-            followUpOperationMessage = "Add a title before saving this follow-up."
+            followUpOperationMessage = "Add a title before saving this Action."
             return nil
         }
         let now = Date()
@@ -1048,7 +1048,7 @@ final class AppState: ObservableObject {
             settingsStore.settings.followUpDisplay.minimumPriority = 0
             settingsStore.settings.followUpDisplay.viewMode = .active
             settingsStore.settings.followUpDisplay.completedRailMode = .rail
-            followUpOperationMessage = "Follow Up was reset. New activity will start a clean workspace."
+            followUpOperationMessage = "Actions were reset. New activity will start a clean workspace."
             await refresh()
         } catch {
             followUpOperationMessage = error.localizedDescription
@@ -1286,12 +1286,12 @@ final class AppState: ObservableObject {
         guard values.count >= 2 else { return }
         let participatingIDs = selection.sourceIDs
         guard preparedDraft != nil || (try? settingsStore.apiKey()) != nil else {
-            followUpOperationMessage = "Add a valid OpenAI API key before merging follow-ups."
+            followUpOperationMessage = "Add a valid OpenAI API key before merging Actions."
             return
         }
         let target = targetID.flatMap { id in values.first(where: { $0.id == id }) } ?? values[0]
         let subject = target.subjectID.flatMap { id in followUpSubjects.first(where: { $0.id == id }) }
-        followUpOperationMessage = "Merging \(values.count) follow-ups…"
+        followUpOperationMessage = "Merging \(values.count) Actions…"
         do {
             let draft: FollowUpMergeDraft
             if let preparedDraft {
@@ -1395,7 +1395,7 @@ final class AppState: ObservableObject {
             merged.history.append(FollowUpHistoryEntry(
                 kind: .merged,
                 actor: .iriz,
-                summary: "Merged \(values.count) follow-ups from \(sourceSubjects): \(sourceTitles)",
+                summary: "Merged \(values.count) Actions from \(sourceSubjects): \(sourceTitles)",
                 occurredAt: now
             ))
             try await repository.replaceCommitments(with: merged, deletingSourceIDs: participatingIDs)
@@ -1422,7 +1422,7 @@ final class AppState: ObservableObject {
 
     func cancelPendingFollowUpMerge() {
         pendingFollowUpMergeConfirmation = nil
-        followUpOperationMessage = "Merge cancelled. Both follow-ups were kept."
+        followUpOperationMessage = "Merge cancelled. Both Actions were kept."
     }
 
     func mergeAllActiveFollowUps(in subjectID: String) async {
@@ -1470,7 +1470,7 @@ final class AppState: ObservableObject {
         let text = FollowUpExportService.plainText(for: exportPayload(for: value))
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        followUpOperationMessage = "Copied follow-up."
+        followUpOperationMessage = "Copied Action."
     }
 
     func mediaData(identifier: String) async -> Data? {
@@ -1777,7 +1777,7 @@ final class AppState: ObservableObject {
                         history: [FollowUpHistoryEntry(
                             kind: .created,
                             actor: .iriz,
-                            summary: draft.rationale.isEmpty ? "Detected by Iriz" : draft.rationale,
+                            summary: draft.rationale.isEmpty ? "Detected by iriz" : draft.rationale,
                             occurredAt: consolidated.startedAt,
                             eventID: consolidated.id
                         )]

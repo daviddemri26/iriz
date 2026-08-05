@@ -31,7 +31,7 @@ struct MainWindowView: View {
                 .environmentObject(app)
         }
         .alert(
-            "These follow-ups may be unrelated",
+            "These Actions may be unrelated",
             isPresented: Binding(
                 get: { app.pendingFollowUpMergeConfirmation != nil },
                 set: { isPresented in

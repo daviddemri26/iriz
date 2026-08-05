@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// A focused provenance view for assistant citations and follow-up evidence.
-/// Structured events remain Iriz's private memory layer without being exposed
+/// A focused provenance view for assistant citations and Action evidence.
+/// Structured events remain iriz's private memory layer without being exposed
 /// as a standalone customer-facing timeline.
 struct SourceDetailView: View {
     @Environment(\.dismiss) private var dismiss
@@ -48,7 +48,7 @@ struct SourceDetailView: View {
     }
 
     private var overview: some View {
-        sourceSection("What Iriz retained", symbol: "text.quote") {
+        sourceSection("What iriz retained", symbol: "text.quote") {
             VStack(alignment: .leading, spacing: 12) {
                 Text(event.summary)
                     .font(.body)

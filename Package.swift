@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "Iriz",
+    name: "iriz",
     platforms: [
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "Iriz", targets: ["Iriz"])
+        .executable(name: "iriz", targets: ["Iriz"])
     ],
     targets: [
         .executableTarget(

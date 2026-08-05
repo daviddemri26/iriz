@@ -82,8 +82,8 @@ enum IndicatorPresentationResolver {
             )
         case .assistant:
             IndicatorPresentation(
-                title: "Preparing Ask Iriz",
-                detail: "Iriz is assembling relevant local memory.",
+                title: "Preparing Ask iriz",
+                detail: "iriz is assembling relevant local memory.",
                 symbol: "sparkles",
                 palette: .violetSignal,
                 badge: "LOCAL",
@@ -91,8 +91,8 @@ enum IndicatorPresentationResolver {
             )
         case .followUp:
             IndicatorPresentation(
-                title: "Preparing Follow Up",
-                detail: "Iriz is connecting relevant local context.",
+                title: "Preparing Actions",
+                detail: "iriz is connecting relevant local context.",
                 symbol: "checklist",
                 palette: .violetSignal,
                 badge: "LOCAL",
@@ -101,7 +101,7 @@ enum IndicatorPresentationResolver {
         case .credentials:
             IndicatorPresentation(
                 title: "Checking credentials locally",
-                detail: "Iriz is preparing a secure credential check.",
+                detail: "iriz is preparing a secure credential check.",
                 symbol: "key.fill",
                 palette: .violetSignal,
                 badge: "LOCAL",
@@ -140,10 +140,10 @@ enum IndicatorPresentationResolver {
         occurredAt _: Date
     ) -> IndicatorPresentation {
         IndicatorPresentation(
-            title: "Follow Up updated",
+            title: "Actions updated",
             detail: context == .followUp
-                ? "Iriz created or meaningfully enriched a visible tile."
-                : "Iriz saved a useful result to Follow Up.",
+                ? "iriz created or meaningfully enriched a visible Action."
+                : "iriz saved a useful result to Actions.",
             symbol: "checkmark",
             palette: .mint,
             badge: "SAVED",
@@ -157,7 +157,7 @@ enum IndicatorPresentationResolver {
     ) -> IndicatorPresentation {
         IndicatorPresentation(
             title: "OpenAI request failed",
-            detail: "The \(context.failureContextName) request failed once. Iriz is returning to its current state.",
+            detail: "The \(context.failureContextName) request failed once. iriz is returning to its current state.",
             symbol: "exclamationmark.arrow.triangle.2.circlepath",
             palette: .attention,
             badge: "RETRY",
@@ -237,8 +237,8 @@ private extension IndicatorActivityContext {
         case .screen: "screen interpretation"
         case .voice: "speech"
         case .meeting: "meeting interpretation"
-        case .assistant: "Ask Iriz"
-        case .followUp: "Follow Up"
+        case .assistant: "Ask iriz"
+        case .followUp: "Actions"
         case .credentials: "credential validation"
         }
     }
@@ -252,9 +252,9 @@ private extension IndicatorAPITask {
         case .originalImageAnalysis: "Reviewing a selected key image."
         case .transcription: "Transcribing a selected voice segment."
         case .diarizedTranscription: "Separating speakers in a selected meeting segment."
-        case .assistantAnswer: "Answering from relevant Iriz memory."
+        case .assistantAnswer: "Answering from relevant iriz memory."
         case .eventRefinement: "Refining useful evidence into structured memory."
-        case .followUpMerge: "Resolving related Follow Up items."
+        case .followUpMerge: "Resolving related Actions."
         }
     }
 
@@ -265,9 +265,9 @@ private extension IndicatorAPITask {
         case .originalImageAnalysis: "key image analysis"
         case .transcription: "transcription"
         case .diarizedTranscription: "speaker diarization"
-        case .assistantAnswer: "Ask Iriz"
+        case .assistantAnswer: "Ask iriz"
         case .eventRefinement: "memory refinement"
-        case .followUpMerge: "Follow Up merging"
+        case .followUpMerge: "Action merging"
         }
     }
 }

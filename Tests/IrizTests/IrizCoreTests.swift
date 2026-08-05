@@ -236,12 +236,12 @@ struct IrizCoreTests {
     @Test("The control card reports current activity instead of the timing mode")
     func liveStatusSemantics() {
         let waiting = CaptureHealth.waitingForSchedule.irizAppearance
-        #expect(waiting.title == "Iriz is waiting")
+        #expect(waiting.title == "iriz is waiting")
         #expect(waiting.detail.contains("Not observing or listening"))
         #expect(!waiting.rotates)
 
         let observing = CaptureHealth.observing.irizAppearance
-        #expect(observing.title == "Iriz is observing")
+        #expect(observing.title == "iriz is observing")
         #expect(observing.detail.contains("right now"))
         #expect(!observing.rotates)
     }
@@ -505,7 +505,7 @@ struct IrizCoreTests {
         let content = try #require(input.first?["content"] as? [[String: Any]])
         let prompt = try #require(content.first?["text"] as? String)
         #expect(object["store"] as? Bool == false)
-        #expect(prompt.contains("Detail level for newly created follow-ups: Micro"))
+        #expect(prompt.contains("Detail level for newly created Actions: Micro"))
         #expect(prompt.contains("This setting applies only to operation=create"))
         #expect(prompt.contains("\"createdDetailLevel\":\"outcome\""))
         #expect(prompt.contains("priorityScore"))

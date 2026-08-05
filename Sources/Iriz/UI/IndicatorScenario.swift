@@ -76,7 +76,7 @@ struct IndicatorScenario: Identifiable, Equatable, Sendable {
         IndicatorScenario(
             id: "private",
             title: "Private context",
-            detail: "Iriz recognized an excluded or protected context and did not capture it.",
+            detail: "iriz recognized an excluded or protected context and did not capture it.",
             presentation: .privateContext,
             group: .everyday,
             modelName: nil
@@ -116,7 +116,7 @@ struct IndicatorScenario: Identifiable, Equatable, Sendable {
         IndicatorScenario(
             id: "meeting",
             title: "Meeting",
-            detail: "Iriz detected a supported meeting context.",
+            detail: "iriz detected a supported meeting context.",
             presentation: .meeting,
             group: .everyday,
             modelName: nil
@@ -132,7 +132,7 @@ struct IndicatorScenario: Identifiable, Equatable, Sendable {
         IndicatorScenario(
             id: "screen-signal",
             title: "Useful screen signal",
-            detail: "A meaningful local change passed Iriz's relevance filters.",
+            detail: "A meaningful local change passed iriz's relevance filters.",
             presentation: .screenSignal,
             group: .localActivity,
             modelName: nil
@@ -140,7 +140,7 @@ struct IndicatorScenario: Identifiable, Equatable, Sendable {
         IndicatorScenario(
             id: "voice-signal",
             title: "Useful voice signal",
-            detail: "A voiced segment passed Iriz's local speech filters.",
+            detail: "A voiced segment passed iriz's local speech filters.",
             presentation: .voiceSignal,
             group: .localActivity,
             modelName: nil
@@ -164,15 +164,15 @@ struct IndicatorScenario: Identifiable, Equatable, Sendable {
         IndicatorScenario(
             id: "intensive-api",
             title: "Intensive reasoning",
-            detail: "Ask Iriz, refinement, or merging is using OpenAI.",
+            detail: "Ask iriz, refinement, or Action merging is using OpenAI.",
             presentation: .intensiveAPI,
             group: .openAI,
             modelName: OpenAIModelPolicy.consolidation
         ),
         IndicatorScenario(
             id: "saved",
-            title: "Follow Up updated",
-            detail: "Iriz created or meaningfully enriched a visible Follow Up tile.",
+            title: "Actions updated",
+            detail: "iriz created or meaningfully enriched a visible Action.",
             presentation: .success,
             group: .outcomesAndAttention,
             modelName: nil
@@ -187,7 +187,7 @@ struct IndicatorScenario: Identifiable, Equatable, Sendable {
         ),
         IndicatorScenario(
             id: "blocking-error",
-            title: "Iriz needs attention",
+            title: "iriz needs attention",
             detail: "A persistent fault is preventing observation until it is resolved.",
             presentation: .blockingError,
             group: .outcomesAndAttention,
@@ -196,7 +196,7 @@ struct IndicatorScenario: Identifiable, Equatable, Sendable {
         IndicatorScenario(
             id: "api-failure",
             title: "API request failed",
-            detail: "A request failed once; Iriz returns to its current durable state.",
+            detail: "A request failed once; iriz returns to its current durable state.",
             presentation: .apiFailure,
             group: .outcomesAndAttention,
             modelName: nil
@@ -282,7 +282,7 @@ extension IndicatorPresentation {
 
     static let intensiveAPI = IndicatorPresentation(
         title: "OpenAI · Intensive",
-        detail: "Running Ask Iriz, refinement, or merging.",
+        detail: "Running Ask iriz, refinement, or Action merging.",
         symbol: "brain.head.profile",
         palette: .intensiveAPI,
         badge: "INTENSIVE",
@@ -292,8 +292,8 @@ extension IndicatorPresentation {
     )
 
     static let success = IndicatorPresentation(
-        title: "Follow Up updated",
-        detail: "Iriz created or meaningfully enriched a visible tile.",
+        title: "Actions updated",
+        detail: "iriz created or meaningfully enriched a visible Action.",
         symbol: "checkmark",
         palette: .mint,
         badge: "SAVED",
@@ -310,7 +310,7 @@ extension IndicatorPresentation {
     )
 
     static let blockingError = IndicatorPresentation(
-        title: "Iriz needs attention",
+        title: "iriz needs attention",
         detail: "A persistent issue is preventing observation. Open Settings to review it.",
         symbol: "exclamationmark.triangle.fill",
         palette: .attention,
@@ -320,7 +320,7 @@ extension IndicatorPresentation {
 
     static let apiFailure = IndicatorPresentation(
         title: "OpenAI request failed",
-        detail: "The request failed once. Iriz will return to its current state.",
+        detail: "The request failed once. iriz will return to its current state.",
         symbol: "exclamationmark.arrow.triangle.2.circlepath",
         palette: .attention,
         badge: "RETRY",

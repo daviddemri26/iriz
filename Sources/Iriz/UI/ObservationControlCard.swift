@@ -265,7 +265,7 @@ struct ObservationControlCard: View {
             }
             .buttonStyle(.plain)
             .help("Open Privacy settings")
-            .accessibilityHint("Opens the Privacy category in Iriz Settings")
+            .accessibilityHint("Opens the Privacy category in iriz Settings")
         } else {
             statusFooterContent
         }
@@ -323,7 +323,7 @@ struct ObservationControlCard: View {
     private var navigationActions: some View {
         HStack(spacing: 6) {
             CompactFeatureShortcut(
-                title: "Follow Up",
+                title: "Actions",
                 symbol: "checkmark.circle.fill",
                 colors: [IrizTheme.observing, IrizTheme.mint]
             ) {
@@ -342,7 +342,7 @@ struct ObservationControlCard: View {
 
     private var detailLevelRow: some View {
         HStack(spacing: 8) {
-            Label("Follow-up detail", systemImage: "square.3.layers.3d")
+            Label("Action detail", systemImage: "square.3.layers.3d")
                 .font(.system(size: 9.5, weight: .medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -402,7 +402,7 @@ struct ObservationControlCard: View {
 
     private var detailLevelMenu: some View {
         Menu {
-            Section("New follow-ups") {
+            Section("New Actions") {
                 ForEach(FollowUpDetailLevel.allCases) { level in
                     Button {
                         settings.settings.followUpDetailLevel = level
@@ -431,8 +431,8 @@ struct ObservationControlCard: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize(horizontal: true, vertical: false)
-        .help("Follow-up detail: \(settings.settings.followUpDetailLevel.description) Applies only to new tiles.")
-        .accessibilityLabel("Follow-up detail level, \(settings.settings.followUpDetailLevel.displayName)")
+        .help("Action detail: \(settings.settings.followUpDetailLevel.description) Applies only to new Actions.")
+        .accessibilityLabel("Action detail level, \(settings.settings.followUpDetailLevel.displayName)")
     }
 
     private var pauseButton: some View {
@@ -448,8 +448,8 @@ struct ObservationControlCard: View {
                 .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
-        .help(settings.settings.isPaused ? "Resume Iriz" : "Pause Iriz")
-        .accessibilityLabel(settings.settings.isPaused ? "Resume Iriz" : "Pause Iriz")
+        .help(settings.settings.isPaused ? "Resume iriz" : "Pause iriz")
+        .accessibilityLabel(settings.settings.isPaused ? "Resume iriz" : "Pause iriz")
         .accessibilityHint(settings.settings.isPaused ? "Starts observation" : "Stops all observation")
     }
 }

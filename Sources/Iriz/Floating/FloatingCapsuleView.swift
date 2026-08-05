@@ -28,7 +28,7 @@ struct FloatingCapsuleView: View {
                 style: .continuous
             )
         )
-        .help("Iriz · \(app.indicatorPresentation.title)")
+        .help("iriz · \(app.indicatorPresentation.title)")
         .onTapGesture(perform: model.expand)
         .simultaneousGesture(
             DragGesture(minimumDistance: 4)
@@ -36,7 +36,7 @@ struct FloatingCapsuleView: View {
                 .onEnded { _ in model.dragEnded() }
         )
         .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Opens Iriz controls")
+        .accessibilityHint("Opens iriz controls")
         .accessibilityAction(.default) { model.expand() }
     }
 

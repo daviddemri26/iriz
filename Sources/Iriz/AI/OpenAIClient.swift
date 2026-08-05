@@ -117,7 +117,7 @@ enum OpenAIClientError: LocalizedError, Equatable {
         case .missingAPIKey: "Add your OpenAI API key in Settings."
         case .invalidResponse: "OpenAI returned an unreadable response."
         case .requestFailed(let status, let message): "OpenAI request failed (\(status)): \(message)"
-        case .malformedStructuredOutput: "OpenAI returned an event that did not match the Iriz format."
+        case .malformedStructuredOutput: "OpenAI returned an event that did not match the iriz format."
         }
     }
 
@@ -586,7 +586,7 @@ actor OpenAIClient: AIProviding {
             ? first.rationale
             : first.summary
         let title = first.action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? (observation.windowTitle ?? "Follow-up evidence")
+            ? (observation.windowTitle ?? "Action evidence")
             : first.action
         return ActivityEvent(
             startedAt: observation.capturedAt,
@@ -686,10 +686,10 @@ enum OpenAIRequestFactory {
             ]
         }
         let prompt = """
-        Answer the user's question using only the candidate Iriz events below. Write in \(outputLanguage).
+        Answer the user's question using only the candidate iriz events below. Write in \(outputLanguage).
         Be conversational and precise. Use concise Markdown when it improves readability: short paragraphs, **bold** key facts, and compact lists.
         Separate paragraphs, headings, and lists with blank lines. Never join a bold heading directly to the preceding or following sentence.
-        Previous turns are conversational context for follow-up wording only; they are not evidence. Every factual claim must still be supported by a candidate event.
+        Previous turns are conversational context for the current question only; they are not evidence. Every factual claim must still be supported by a candidate event.
         If the evidence does not establish an action, say \"No matching evidence was found\".
         Include only IDs for events that directly support the answer. Never invent a URL, company, date, or action.
 
@@ -721,7 +721,7 @@ enum OpenAIRequestFactory {
             "confidence": event.confidence
         ]
         let prompt = """
-        Refine one meaningful Iriz event in \(outputLanguage). Make the title short and human, the summary factual, and the details useful for future retrieval.
+        Refine one meaningful iriz event in \(outputLanguage). Make the title short and human, the summary factual, and the details useful for future retrieval.
         Preserve evidence boundaries. Never invent a person, company, URL, date, completion, purchase, submission, or commitment. A completed status requires explicit confirmation already present in the input.
         Return every URL exactly as provided. Prefer a cautious status when the evidence is ambiguous.
 
@@ -758,7 +758,7 @@ enum OpenAIRequestFactory {
             ]
         }
         let prompt = """
-        Assess whether these Iriz follow-ups belong in one clear actionable follow-up, then prepare the best possible merge in \(outputLanguage).
+        Assess whether these iriz Actions belong in one clear Action, then prepare the best possible merge in \(outputLanguage).
         Use relationship=unrelated only when the actions clearly concern different obligations, projects, people, or outcomes and combining them would be misleading. Use uncertain when the connection is plausible but weak. Otherwise use related.
         Give a short factual relationshipReason. Do not mark items unrelated merely because they have different wording or subjects when they contribute to the same outcome.
         Preserve every distinct obligation in the summary or details, but write one concise action title.
@@ -766,7 +766,7 @@ enum OpenAIRequestFactory {
         Return a priority from 0 to 10. Treat priority as consequence and urgency, not confidence.
         The caller will preserve authoritative user-entered priority, subject, and deadlines; provide the best evidence-based result for all other fields.
 
-        Follow-ups: \(try jsonString(values))
+        Actions: \(try jsonString(values))
         """
         return try jsonData([
             "model": policy.model,
@@ -828,8 +828,8 @@ enum OpenAIRequestFactory {
             ? knownFollowUpContexts.filter { !FollowUpContextGrouper.isGenericSubjectName($0) }
             : concreteSubjects.map(\.name)
         let contextGuidance = contexts.isEmpty
-            ? "No existing custom follow-up contexts are available yet."
-            : "Existing follow-up contexts: \(contexts.joined(separator: ", ")). Reuse an exact existing label whenever it fits."
+            ? "No existing custom Action subjects are available yet."
+            : "Existing Action subjects: \(contexts.joined(separator: ", ")). Reuse an exact existing label whenever it fits."
         let candidates = followUpCandidates.prefix(8).map { commitment -> [String: Any] in
             [
                 "id": commitment.id.uuidString,
@@ -852,24 +852,24 @@ enum OpenAIRequestFactory {
             ]
         }
         return """
-        You are Iriz, a private activity-memory classifier. Analyze this single observation as evidence, not as certainty.
+        You are iriz, a private activity-memory classifier. Analyze this single observation as evidence, not as certainty.
         Prefer human actions (application submitted, purchase confirmed, appointment booked, decision made, promise, useful meeting) over technical activity.
         A page view or form being edited is observed/inProgress, never completed. Use completed only when confirmation evidence is explicit.
         Create no event for routine navigation or low-value app/window changes. If useful only as secondary context, use kind=context and importance=0.
         Extract exact companies, roles, products, people and URLs only when present. Do not infer missing URLs.
         Write title, summary and details in \(outputLanguage). Use a concise title and factual summary.
-        Extract a follow-up only when confidence is at least 0.60, or when the evidence contains an explicit obligation or deadline. Do not create a "maybe" status.
-        Give every follow-up an integer priorityScore from 0 to 10 based on consequence, urgency, explicit deadline, and usefulness. Priority is not confidence.
+        Extract an Action only when confidence is at least 0.60, or when the evidence contains an explicit obligation or deadline. Do not create a "maybe" status.
+        Give every Action an integer priorityScore from 0 to 10 based on consequence, urgency, explicit deadline, and usefulness. Priority is not confidence.
         A deadline is allowed only when an exact date or time is explicitly present in the observation and directly applies to the action. Put that date in explicitDueAt, set dueSource=explicitEvidence, and cite the evidence in rationale. Otherwise both explicitDueAt and suggestedReviewAt must be null. Never invent a review date or use a date merely visible in the interface.
-        Detail level for newly created follow-ups: \(followUpDetailLevel.displayName). \(detailLevelGuidance(followUpDetailLevel)) This setting applies only to operation=create. For update or complete, preserve each candidate's action and summary verbatim, retain its createdDetailLevel, and use details only for additive context. Never split, combine, broaden, narrow, or otherwise reformulate an existing candidate because of the current setting.
+        Detail level for newly created Actions: \(followUpDetailLevel.displayName). \(detailLevelGuidance(followUpDetailLevel)) This setting applies only to operation=create. For update or complete, preserve each candidate's action and summary verbatim, retain its createdDetailLevel, and use details only for additive context. Never split, combine, broaden, narrow, or otherwise reformulate an existing candidate because of the current setting.
         Treat area and contextLabel as different fields: area is only the broad Work, Personal, or Uncategorized type. contextLabel must be a concrete, reusable subject such as Client Acme, Lafayette Website, Kids Activities, or Vacation with Maya. Never use Work, Personal, General, Other, or Uncategorized as contextLabel when the evidence supports anything more precise. Prefer the client, project, website, family activity, person, or durable topic actually named by the evidence, while avoiding a unique subject for every individual action. \(contextGuidance)
-        Compare only against the bounded candidate follow-ups below. Use operation=update or operation=complete only with an exact candidate id; otherwise use create and a null id.
+        Compare only against the bounded candidate Actions below. Use operation=update or operation=complete only with an exact candidate id; otherwise use create and a null id.
         Whenever commitments is non-empty, set shouldCreateEvent=true and include a compact supporting event for the same observation.
         Complete only when the observation contains explicit or strong completion proof tied to the same action. Weak evidence must use update with evidenceStrength=weak.
         Preserve candidate fields unless the new evidence genuinely improves them. Never dismiss or snooze automatically.
 
         Subject catalog: \((try? jsonString(subjectCatalog)) ?? "[]")
-        Candidate follow-ups: \((try? jsonString(candidates)) ?? "[]")
+        Candidate Actions: \((try? jsonString(candidates)) ?? "[]")
 
         Captured: \(ISO8601DateFormatter().string(from: observation.capturedAt))
         Application: \(observation.applicationName ?? "Unknown")
@@ -883,15 +883,15 @@ enum OpenAIRequestFactory {
     private static func detailLevelGuidance(_ level: FollowUpDetailLevel) -> String {
         switch level {
         case .outcome:
-            "For operation=create, create very few durable outcome-level follow-ups. Bundle related milestones and steps into one broad action, such as Continue developing Iriz on the new version."
+            "For operation=create, create very few durable outcome-level Actions. Bundle related milestones and steps into one broad action, such as Continue developing iriz on the new version."
         case .milestone:
-            "For operation=create, create one follow-up per major deliverable or phase. Bundle the concrete steps required to reach the same milestone."
+            "For operation=create, create one Action per major deliverable or phase. Bundle the concrete steps required to reach the same milestone."
         case .standard:
-            "For operation=create, create one follow-up per distinct, meaningful action or deliverable. Keep naturally related steps together."
+            "For operation=create, create one Action per distinct, meaningful commitment or deliverable. Keep naturally related steps together."
         case .detailed:
-            "For operation=create, create separate follow-ups for clear concrete steps when they can be acted on independently, while avoiding duplicate or trivial tiles."
+            "For operation=create, create separate Actions for clear concrete steps when they can be acted on independently, while avoiding duplicate or trivial tiles."
         case .micro:
-            "For operation=create, create granular follow-ups for the smallest concrete next actions. Multiple tiles are appropriate when each micro-task can be completed independently."
+            "For operation=create, create granular Actions for the smallest concrete next steps. Multiple tiles are appropriate when each micro-task can be completed independently."
         }
     }
 

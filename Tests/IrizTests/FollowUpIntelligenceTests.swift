@@ -501,7 +501,7 @@ struct FollowUpIntelligenceTests {
         #expect(rewritten.details.contains("Details: Keep this source note verbatim"))
         #expect(rewritten.details.contains("Subject: Client Acme"))
         #expect(rewritten.details.contains("Subject: Website Redesign"))
-        #expect(rewritten.details.contains("Merged source follow-ups:"))
+        #expect(rewritten.details.contains("Merged source Actions:"))
         #expect(rewritten.manuallyEditedFields.contains(.details))
     }
 

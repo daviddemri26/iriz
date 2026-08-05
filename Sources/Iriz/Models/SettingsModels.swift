@@ -382,9 +382,9 @@ enum CaptureHealth: Equatable, Sendable {
 }
 
 enum MainSection: String, CaseIterable, Identifiable, Sendable {
-    case assistant = "Ask Iriz"
-    case followUp = "Follow Up"
-    case howIrizWorks = "How Iriz Works"
+    case assistant = "Ask iriz"
+    case followUp = "Actions"
+    case howIrizWorks = "How iriz Works"
     case settings = "Settings"
 
     static let initial: MainSection = .howIrizWorks

@@ -48,15 +48,15 @@ struct HowIrizWorksView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Remember what you actually did")
                         .font(.system(size: 34, weight: .bold, design: .rounded))
-                    Text("Iriz notices meaningful changes, keeps the routine quiet, and turns useful context into private memory and clear follow-ups.")
+                    Text("iriz notices meaningful changes, keeps the routine quiet, and turns useful context into private memory and clear Actions.")
                         .font(.title3)
                         .foregroundStyle(.white.opacity(0.78))
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 10) {
-                        Button("Ask Iriz") { app.selectedSection = .assistant }
+                        Button("Ask iriz") { app.selectedSection = .assistant }
                             .buttonStyle(.borderedProminent)
                             .tint(IrizTheme.violet)
-                        Button("Open Follow Up") { app.selectedSection = .followUp }
+                        Button("Open Actions") { app.selectedSection = .followUp }
                             .buttonStyle(.bordered)
                     }
                     .padding(.top, 2)
@@ -74,7 +74,7 @@ struct HowIrizWorksView: View {
         GuideSection(
             eyebrow: "LOCAL FIRST, CLEARLY EXPLAINED",
             title: "Your Mac filters first. OpenAI interprets only what matters.",
-            detail: "Iriz does not stream your entire day. It detects useful signals locally, sends selected context only when advanced understanding is needed, and keeps the resulting memory encrypted on your Mac."
+            detail: "iriz does not stream your entire day. It detects useful signals locally, sends selected context only when advanced understanding is needed, and keeps the resulting memory encrypted on your Mac."
         ) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 14)], spacing: 14) {
                 GuideStepCard(
@@ -93,7 +93,7 @@ struct HowIrizWorksView: View {
                     number: "03",
                     symbol: "checklist",
                     title: "Remember and act",
-                    detail: "Iriz keeps searchable evidence, answers with sources and turns real loose ends into manageable follow-ups."
+                    detail: "iriz keeps searchable evidence, answers with sources and turns real loose ends into manageable Actions."
                 )
             }
         }
@@ -261,7 +261,7 @@ struct HowIrizWorksView: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
                 PrivacyCard(symbol: "lock.shield.fill", title: "Encrypted on your Mac", detail: "Memory, search data, screenshots and audio are encrypted locally. Raw media expires automatically.")
                 PrivacyCard(symbol: "eye.slash.fill", title: "Sensitive places stay private", detail: "Excluded apps, domains, secure fields and authentication windows are never captured.")
-                PrivacyCard(symbol: "keyboard", title: "No hidden input capture", detail: "Iriz never records keystrokes, clipboard contents or camera video.")
+                PrivacyCard(symbol: "keyboard", title: "No hidden input capture", detail: "iriz never records keystrokes, clipboard contents or camera video.")
                 PrivacyCard(symbol: "arrow.up.forward.app", title: "Selective OpenAI requests", detail: "Only selected context goes directly from this Mac to OpenAI through your API key, with storage disabled for analysis requests.")
             }
         }

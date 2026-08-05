@@ -31,4 +31,4 @@ CODE_SIGN_TIMESTAMP="automatic" \
 IRIZ_BUILD_CHANNEL="ReleaseCandidate" \
 "$PROJECT_ROOT/Scripts/package_app.sh"
 
-"$PROJECT_ROOT/Scripts/verify_release_candidate.sh" "$PROJECT_ROOT/build/Iriz.app"
+"$PROJECT_ROOT/Scripts/verify_release_candidate.sh" "$PROJECT_ROOT/build/iriz.app"

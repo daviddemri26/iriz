@@ -2,15 +2,15 @@
 set -euo pipefail
 
 PROJECT_ROOT="${0:A:h:h}"
-APP_PATH="${1:-$PROJECT_ROOT/build/Iriz.app}"
+APP_PATH="${1:-$PROJECT_ROOT/build/iriz.app}"
 
 if [[ ! -d "$APP_PATH" ]]; then
-  echo "Iriz app not found at $APP_PATH" >&2
+  echo "iriz app not found at $APP_PATH" >&2
   exit 1
 fi
 
 INFO_PLIST="$APP_PATH/Contents/Info.plist"
-BINARY="$APP_PATH/Contents/MacOS/Iriz"
+BINARY="$APP_PATH/Contents/MacOS/iriz"
 CHANNEL="$(/usr/libexec/PlistBuddy -c 'Print :IrizBuildChannel' "$INFO_PLIST")"
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST")"
 SIGNATURE_DETAILS="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"

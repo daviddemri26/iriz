@@ -284,7 +284,7 @@ enum FollowUpCompletionActor: String, Codable, CaseIterable, Sendable {
     var displayName: String {
         switch self {
         case .user: "Completed by you"
-        case .iriz: "Completed by Iriz"
+        case .iriz: "Completed by iriz"
         }
     }
 }

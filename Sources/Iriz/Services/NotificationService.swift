@@ -8,8 +8,8 @@ actor NotificationService {
         center.removePendingNotificationRequests(withIdentifiers: ["iriz.daily-digest"])
         guard enabled else { return }
         let content = UNMutableNotificationContent()
-        content.title = "Your Iriz daily review"
-        content.body = "A few moments may be worth revisiting. Open Follow Up when you are ready."
+        content.title = "Your iriz daily review"
+        content.body = "A few moments may be worth revisiting. Open Actions when you are ready."
         content.sound = nil
         var components = DateComponents()
         components.hour = min(max(hour, 0), 23)

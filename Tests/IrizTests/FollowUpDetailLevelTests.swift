@@ -32,11 +32,11 @@ struct FollowUpDetailLevelTests {
     @Test("Every level sends distinct creation guidance")
     func requestGuidance() throws {
         let expectedGuidance: [FollowUpDetailLevel: String] = [
-            .outcome: "very few durable outcome-level follow-ups",
-            .milestone: "one follow-up per major deliverable or phase",
-            .standard: "one follow-up per distinct, meaningful action",
-            .detailed: "separate follow-ups for clear concrete steps",
-            .micro: "smallest concrete next actions"
+            .outcome: "very few durable outcome-level Actions",
+            .milestone: "one Action per major deliverable or phase",
+            .standard: "one Action per distinct, meaningful commitment",
+            .detailed: "separate Actions for clear concrete steps",
+            .micro: "smallest concrete next steps"
         ]
         var prompts: Set<String> = []
 
@@ -52,7 +52,7 @@ struct FollowUpDetailLevelTests {
             let content = try #require(input.first?["content"] as? [[String: Any]])
             let prompt = try #require(content.first?["text"] as? String)
 
-            #expect(prompt.contains("Detail level for newly created follow-ups: \(level.displayName)"))
+            #expect(prompt.contains("Detail level for newly created Actions: \(level.displayName)"))
             #expect(prompt.contains(try #require(expectedGuidance[level])))
             #expect(prompt.contains("This setting applies only to operation=create"))
             prompts.insert(prompt)
@@ -104,7 +104,7 @@ struct FollowUpDetailLevelTests {
         let original = Commitment(
             eventID: UUID(),
             owner: "You",
-            action: "Continue developing Iriz on the new version",
+            action: "Continue developing iriz on the new version",
             confidence: 0.8,
             state: .needsAttention,
             summary: "Deliver the next coherent version.",
@@ -122,7 +122,7 @@ struct FollowUpDetailLevelTests {
             details: "Priority controls are being refined.",
             explicitDueAt: nil,
             suggestedReviewAt: nil,
-            contextLabel: "Iriz Follow Up",
+            contextLabel: "iriz Actions",
             confidence: 0.9
         )
 

@@ -4,7 +4,7 @@ enum CommitmentLinker {
     static let maximumRelatedCandidates = 8
 
     /// Applies text learned from a later observation without allowing the
-    /// current creation granularity to rewrite an existing follow-up's scope.
+    /// current creation granularity to rewrite an existing Action's scope.
     /// Action and summary remain stable; Iriz may only add non-destructive
     /// detail when that field has not been made authoritative by the user.
     static func applyingNonDestructiveTextUpdate(

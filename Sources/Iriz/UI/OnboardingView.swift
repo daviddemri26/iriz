@@ -23,7 +23,7 @@ struct OnboardingView: View {
             HStack {
                 if step > 0 { Button("Back") { withAnimation { step -= 1 } } }
                 Spacer()
-                Button(step == 3 ? "Start with Iriz" : "Continue") {
+                Button(step == 3 ? "Start with iriz" : "Continue") {
                     if step == 3 {
                         if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             try? settings.saveAPIKey(apiKey)
@@ -47,7 +47,7 @@ struct OnboardingView: View {
         VStack(spacing: 20) {
             IrizLogo(size: 84)
             Text("Remember what you actually did").font(.system(size: 38, weight: .bold)).multilineTextAlignment(.center)
-            Text("Iriz turns meaningful actions, decisions and commitments into a private, searchable memory — while routine app activity stays in the background.")
+            Text("iriz turns meaningful actions, decisions and commitments into a private, searchable memory — while routine app activity stays in the background.")
                 .font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
     }
@@ -56,14 +56,14 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Local first, by design").font(.system(size: 34, weight: .bold))
             OnboardingPoint(icon: "lock.fill", title: "Encrypted on your Mac", text: "Your memory, search index, screenshots and audio are encrypted locally. Raw media expires after 24 hours.")
-            OnboardingPoint(icon: "keyboard", title: "No keyboard or clipboard capture", text: "Iriz never records keystrokes, clipboard contents or camera video.")
+            OnboardingPoint(icon: "keyboard", title: "No keyboard or clipboard capture", text: "iriz never records keystrokes, clipboard contents or camera video.")
             OnboardingPoint(icon: "eye.slash", title: "Sensitive places stay invisible", text: "Password managers and authentication windows are excluded, and you can add apps or domains.")
         }
     }
 
     private var permissions: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Choose what Iriz can observe").font(.system(size: 34, weight: .bold))
+            Text("Choose what iriz can observe").font(.system(size: 34, weight: .bold))
             Text("You can enable or revoke each permission separately at any time.").foregroundStyle(.secondary)
             SoftCard {
                 VStack(spacing: 14) {
@@ -109,7 +109,7 @@ struct OnboardingView: View {
             Text("Enter your paid API key. It is stored only in macOS Keychain and requests go directly from this Mac to OpenAI. You can also add it later in Settings.")
                 .foregroundStyle(.secondary)
             SecureField("sk-…", text: $apiKey).textFieldStyle(.roundedBorder).font(.title3)
-            Label("Iriz sends store: false with every analysis request.", systemImage: "checkmark.shield")
+            Label("iriz sends store: false with every analysis request.", systemImage: "checkmark.shield")
                 .font(.callout).foregroundStyle(.secondary)
             if app.secureStorageState == .needsApproval {
                 HStack {

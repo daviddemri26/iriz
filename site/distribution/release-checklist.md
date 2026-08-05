@@ -1,4 +1,4 @@
-# Iriz — Distribution checklist
+# iriz — Distribution checklist
 
 ## Identity and ownership
 
@@ -37,7 +37,7 @@
 - Set the final bundle identifier, version and build number.
 - Sign with the release Developer ID or App Store certificate.
 - Notarize and staple direct-download builds.
-- Publish the signed and notarized archive to GitHub Releases with the exact asset name `Iriz.zip` so the permanent direct link works.
+- Publish the signed and notarized archive to GitHub Releases with the exact asset name `iriz.zip` so the permanent direct link works.
 - Validate entitlements and permission purpose strings.
 - Test first launch, onboarding, permissions, pause, exclusions and uninstall cleanup on a clean Mac.
 - Test Universal Binary behavior on Apple silicon and Intel if both remain supported.
@@ -45,7 +45,7 @@
 ## Listing and launch material
 
 - Confirm that public listing copy links to [github.com/daviddemri26/iriz](https://github.com/daviddemri26/iriz) where appropriate.
-- Capture final screenshots from the shipping build with representative fictional data.
+- Capture final screenshots from the shipping build with representative fictional Actions and conversations.
 - Verify that screenshots reveal no personal, customer or API information.
 - Export the final 1024 × 1024 icon from approved master artwork.
 - Confirm subtitle, promotional text, long description and keywords.

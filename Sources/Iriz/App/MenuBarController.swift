@@ -53,8 +53,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = Self.flatLogoImage()
         item.button?.imagePosition = .imageOnly
-        item.button?.setAccessibilityLabel("Iriz")
-        let menu = NSMenu(title: "Iriz")
+        item.button?.setAccessibilityLabel("iriz")
+        let menu = NSMenu(title: "iriz")
         menu.delegate = self
         item.menu = menu
         statusItem = item
@@ -87,7 +87,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         menu.addItem(actionItem(
-            title: settings.settings.isPaused ? "Resume Iriz" : "Pause Iriz",
+            title: settings.settings.isPaused ? "Resume iriz" : "Pause iriz",
             symbol: settings.settings.isPaused ? "play.fill" : "pause.fill",
             action: #selector(togglePause)
         ))
@@ -104,11 +104,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         menu.addItem(actionItem(title: "Mark Moment", symbol: "bookmark.fill", action: #selector(markMoment)))
-        menu.addItem(actionItem(title: "Open Follow Up", symbol: "checklist", action: #selector(openFollowUp)))
-        menu.addItem(actionItem(title: "Ask Iriz", symbol: "sparkles", action: #selector(openAssistant)))
+        menu.addItem(actionItem(title: "Open Actions", symbol: "checklist", action: #selector(openFollowUp)))
+        menu.addItem(actionItem(title: "Ask iriz", symbol: "sparkles", action: #selector(openAssistant)))
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Settings…", symbol: "gearshape", action: #selector(openSettings)))
-        menu.addItem(actionItem(title: "Quit Iriz", symbol: "power", action: #selector(quit)))
+        menu.addItem(actionItem(title: "Quit iriz", symbol: "power", action: #selector(quit)))
     }
 
     private func actionItem(title: String, symbol: String, action: Selector) -> NSMenuItem {

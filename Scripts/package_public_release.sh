@@ -17,7 +17,7 @@ IRIZ_BUILD_CHANNEL="Standalone" \
 CODE_SIGN_TIMESTAMP="automatic" \
 "$PROJECT_ROOT/Scripts/package_app.sh"
 
-APP_PATH="$PROJECT_ROOT/build/Iriz.app"
+APP_PATH="$PROJECT_ROOT/build/iriz.app"
 if /usr/libexec/PlistBuddy -c 'Print :IrizAdHocBuild' "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1; then
   echo "Public release unexpectedly contains the ad hoc build marker." >&2
   exit 1
