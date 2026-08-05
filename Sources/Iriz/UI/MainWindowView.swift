@@ -147,7 +147,7 @@ struct MainWindowView: View {
                 .padding(.horizontal, 15)
                 .padding(.vertical, 13)
             }
-            .frame(maxWidth: .infinity, minHeight: 92)
+            .frame(maxWidth: .infinity, minHeight: 92, maxHeight: 92)
             .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 17, style: .continuous)
