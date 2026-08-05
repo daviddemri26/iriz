@@ -204,6 +204,15 @@ struct IndicatorScenario: Identifiable, Equatable, Sendable {
     ]
 }
 
+enum IndicatorSimulatorLayout {
+    static let groupsBeforePreview: [IndicatorScenario.Group] = [
+        .everyday, .localActivity
+    ]
+    static let groupsAfterPreview: [IndicatorScenario.Group] = [
+        .openAI, .outcomesAndAttention
+    ]
+}
+
 extension IndicatorPresentation {
     static let paused = CaptureHealth.paused.irizAppearance
     static let waiting = CaptureHealth.waitingForSchedule.irizAppearance

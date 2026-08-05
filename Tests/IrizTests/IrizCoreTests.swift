@@ -76,19 +76,65 @@ struct IrizCoreTests {
         )
         let conversation = AssistantConversation(
             title: "Paris hotel research",
-            answers: [answer]
+            answers: [answer],
+            pinnedAt: Date(timeIntervalSince1970: 100)
         )
 
         try await store.saveAssistantConversation(conversation)
         let restored = try await store.assistantConversations(limit: 10)
         #expect(restored.first?.id == conversation.id)
         #expect(restored.first?.answers.first?.text == answer.text)
+        #expect(restored.first?.pinnedAt == conversation.pinnedAt)
 
         let disk = try Data(contentsOf: directory.appendingPathComponent("Iriz.sqlite.iriz"))
         #expect(!String(decoding: disk, as: UTF8.self).contains("Hotel Lumière"))
 
         try await store.deleteAssistantConversation(id: conversation.id)
         #expect(try await store.assistantConversations(limit: 10).isEmpty)
+    }
+
+    @Test("Pinned conversations are ordered by the latest explicit pin")
+    func pinnedAssistantConversations() {
+        let earlier = AssistantConversation(
+            title: "Earlier pin",
+            pinnedAt: Date(timeIntervalSince1970: 100)
+        )
+        let unpinned = AssistantConversation(title: "Not pinned")
+        let later = AssistantConversation(
+            title: "Later pin",
+            pinnedAt: Date(timeIntervalSince1970: 200)
+        )
+
+        let pinned = AssistantConversationPinning.pinned(from: [earlier, unpinned, later])
+        #expect(pinned.map(\.id) == [later.id, earlier.id])
+
+        let removed = AssistantConversationPinning.updating(later, isPinned: false)
+        #expect(removed.pinnedAt == nil)
+        #expect(removed.updatedAt == later.updatedAt)
+    }
+
+    @Test("Older conversation payloads decode as unpinned")
+    func legacyAssistantConversationPinning() throws {
+        struct LegacyConversation: Encodable {
+            let id: UUID
+            let title: String
+            let answers: [AssistantAnswer]
+            let createdAt: Date
+            let updatedAt: Date
+        }
+
+        let legacy = LegacyConversation(
+            id: UUID(),
+            title: "Legacy conversation",
+            answers: [],
+            createdAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let data = try JSONEncoder().encode(legacy)
+        let decoded = try JSONDecoder().decode(AssistantConversation.self, from: data)
+
+        #expect(decoded.id == legacy.id)
+        #expect(decoded.pinnedAt == nil)
     }
 
     @Test("Conversation titles are concise and derived locally")

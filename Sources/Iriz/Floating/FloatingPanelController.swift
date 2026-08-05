@@ -2,6 +2,15 @@
 import Combine
 import SwiftUI
 
+enum FloatingVisibilityPolicy {
+    static func shouldShow(
+        settingEnabled: Bool,
+        mainWindowPresented: Bool
+    ) -> Bool {
+        settingEnabled && !mainWindowPresented
+    }
+}
+
 @MainActor
 final class FloatingCapsuleModel: ObservableObject {
     @Published var isExpanded = false
@@ -115,7 +124,7 @@ final class FloatingPanelController {
     )
     private let expanded = NSSize(
         width: ObservationControlMetrics.floatingWidth,
-        height: ObservationControlMetrics.cardHeight
+        height: ObservationControlMetrics.floatingHeight
     )
     private let edgeInset: CGFloat = 12
 

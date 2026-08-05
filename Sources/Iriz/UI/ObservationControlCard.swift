@@ -1,9 +1,20 @@
 import SwiftUI
 
 enum ObservationControlMetrics {
-    static let floatingWidth: CGFloat = 276
-    static let sidebarWidth: CGFloat = floatingWidth + 24
+    static let cardWidth: CGFloat = 276
     static let cardHeight: CGFloat = 313
+    static let indicatorTopProtrusion: CGFloat = 22
+    static let indicatorLeadingProtrusion: CGFloat = 6
+    static let floatingWidth: CGFloat = cardWidth + indicatorLeadingProtrusion
+    static let floatingHeight: CGFloat = cardHeight + indicatorTopProtrusion
+    static let sidebarWidth: CGFloat = cardWidth + 24
+}
+
+enum IndicatorSettingsDestination {
+    static func category(for captureHealth: CaptureHealth) -> SettingsCategory? {
+        if case .permissionNeeded = captureHealth { return .privacy }
+        return nil
+    }
 }
 
 struct ObservationChannelsControl: View {
@@ -118,7 +129,7 @@ struct ObservationChannelsControl: View {
 }
 
 struct ObservationControlCard: View {
-    enum Placement {
+    enum Placement: Equatable {
         case sidebar
         case floating
     }
@@ -134,8 +145,71 @@ struct ObservationControlCard: View {
     var interactionChanged: ((Bool) -> Void)?
 
     private var appearance: IndicatorPresentation { app.indicatorPresentation }
+    private var settingsDestination: SettingsCategory? {
+        IndicatorSettingsDestination.category(for: app.captureHealth)
+    }
+    private var cardXOffset: CGFloat {
+        placement == .floating ? ObservationControlMetrics.indicatorLeadingProtrusion : 0
+    }
+    private var indicatorXOffset: CGFloat {
+        placement == .floating ? 0 : -ObservationControlMetrics.indicatorLeadingProtrusion
+    }
+    private var outerWidth: CGFloat {
+        placement == .floating
+            ? ObservationControlMetrics.floatingWidth
+            : ObservationControlMetrics.cardWidth
+    }
 
     var body: some View {
+        ZStack(alignment: .topLeading) {
+            cardSurface
+                .offset(
+                    x: cardXOffset,
+                    y: ObservationControlMetrics.indicatorTopProtrusion
+                )
+
+            detachedIndicator
+                .offset(x: indicatorXOffset)
+        }
+        .frame(
+            width: outerWidth,
+            height: ObservationControlMetrics.floatingHeight,
+            alignment: .topLeading
+        )
+    }
+
+    @ViewBuilder private var detachedIndicator: some View {
+        if placement == .floating {
+            detachedIndicatorContent
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 4)
+                        .onChanged { _ in dragChanged?() }
+                        .onEnded { _ in dragEnded?() }
+                )
+        } else {
+            detachedIndicatorContent
+        }
+    }
+
+    private var detachedIndicatorContent: some View {
+        StatusGlyph(appearance: appearance)
+            .contentShape(
+                RoundedRectangle(
+                    cornerRadius: IrizIndicatorMetrics.logoSize
+                        * IrizIndicatorMetrics.logoCornerRadiusRatio
+                        + IrizIndicatorMetrics.ringOutset,
+                    style: .continuous
+                )
+            )
+            .onTapGesture {
+                if let settingsDestination {
+                    app.openSettings(category: settingsDestination)
+                }
+            }
+            .help(settingsDestination == nil ? appearance.title : "Open Privacy settings")
+    }
+
+    private var cardSurface: some View {
         VStack(alignment: .leading, spacing: 7) {
             draggableHeader
             navigationActions
@@ -148,7 +222,7 @@ struct ObservationControlCard: View {
         }
         .padding(13)
         .frame(
-            width: ObservationControlMetrics.floatingWidth,
+            width: ObservationControlMetrics.cardWidth,
             height: ObservationControlMetrics.cardHeight,
             alignment: .top
         )
@@ -180,15 +254,30 @@ struct ObservationControlCard: View {
         }
     }
 
-    private var statusHeader: some View {
+    @ViewBuilder private var statusHeader: some View {
+        if let settingsDestination {
+            Button {
+                app.openSettings(category: settingsDestination)
+            } label: {
+                statusHeaderContent
+            }
+            .buttonStyle(.plain)
+            .help("Open Privacy settings")
+            .accessibilityHint("Opens the Privacy category in Iriz Settings")
+        } else {
+            statusHeaderContent
+        }
+    }
+
+    private var statusHeaderContent: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top, spacing: 8) {
-                StatusGlyph(appearance: appearance)
                 Text(appearance.title)
                     .font(.caption.weight(.semibold))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .layoutPriority(1)
+                    .padding(.leading, 42)
                 Spacer(minLength: 4)
                 Text(appearance.badge)
                     .font(.system(size: 8, weight: .bold, design: .rounded))
@@ -202,17 +291,14 @@ struct ObservationControlCard: View {
                     .background(appearance.tint.opacity(0.12), in: Capsule())
                     .fixedSize(horizontal: true, vertical: false)
             }
-            HStack(spacing: 8) {
-                Color.clear.frame(width: 38, height: 1)
-                Text(appearance.detail)
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
+            Text(appearance.detail)
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(height: 60, alignment: .top)
+        .frame(maxWidth: .infinity, minHeight: 60, maxHeight: 60, alignment: .topLeading)
+        .contentShape(Rectangle())
     }
 
     private var sectionDivider: some View {
@@ -277,7 +363,7 @@ struct ObservationControlCard: View {
             pauseButton
             detailLevelMenu
             Button {
-                app.openMainWindow(section: .settings)
+                app.openSettings()
             } label: {
                 Image(systemName: "gearshape.fill")
                     .font(.caption.weight(.semibold))
@@ -382,8 +468,14 @@ private struct StatusGlyph: View {
     let appearance: IndicatorPresentation
 
     var body: some View {
-        IrizIndicatorView(presentation: appearance, logoSize: 28)
-        .frame(width: 38, height: 38)
+        IrizIndicatorView(
+            presentation: appearance,
+            logoSize: IrizIndicatorMetrics.logoSize
+        )
+        .frame(
+            width: IrizIndicatorMetrics.collapsedPanelSize,
+            height: IrizIndicatorMetrics.collapsedPanelSize
+        )
         .accessibilityHidden(true)
     }
 }

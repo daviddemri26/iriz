@@ -107,18 +107,26 @@ struct HowIrizWorksView: View {
             detail: "Colors combine when states overlap. Only an OpenAI request makes the gradient rotate. Hover or focus a state to preview it; click to keep it selected. The simulator never changes capture, permissions, settings or API activity."
         ) {
             VStack(alignment: .leading, spacing: 20) {
+                ForEach(IndicatorSimulatorLayout.groupsBeforePreview) { group in
+                    scenarioGroup(group)
+                }
+
                 indicatorPreview
 
-                ForEach(IndicatorScenario.Group.allCases) { group in
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(group.title)
-                            .font(.headline)
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
-                            ForEach(IndicatorScenario.all.filter { $0.group == group }) { scenario in
-                                scenarioCard(scenario)
-                            }
-                        }
-                    }
+                ForEach(IndicatorSimulatorLayout.groupsAfterPreview) { group in
+                    scenarioGroup(group)
+                }
+            }
+        }
+    }
+
+    private func scenarioGroup(_ group: IndicatorScenario.Group) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(group.title)
+                .font(.headline)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
+                ForEach(IndicatorScenario.all.filter { $0.group == group }) { scenario in
+                    scenarioCard(scenario)
                 }
             }
         }

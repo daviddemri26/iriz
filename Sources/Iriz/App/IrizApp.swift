@@ -9,7 +9,7 @@ struct IrizApp: App {
     @StateObject private var settings = SettingsStore.shared
 
     var body: some Scene {
-        WindowGroup("Iriz") {
+        Window("Iriz", id: "main") {
             MainWindowView()
                 .environmentObject(app)
                 .environmentObject(settings)
@@ -22,6 +22,7 @@ struct IrizApp: App {
         }
         .defaultSize(width: 1080, height: 720)
         .commands {
+            CommandGroup(replacing: .newItem) { }
             CommandGroup(after: .appInfo) {
                 Button(settings.settings.isPaused ? "Resume Iriz" : "Pause Iriz") {
                     app.setPaused(!settings.settings.isPaused)
@@ -34,13 +35,22 @@ struct IrizApp: App {
     }
 }
 
+enum MainWindowPresentationPolicy {
+    static let allowsMultipleMainWindows = false
+
+    static func targetFrame(for visibleFrame: CGRect) -> CGRect {
+        visibleFrame
+    }
+}
+
 @MainActor
-final class IrizAppDelegate: NSObject, NSApplicationDelegate {
+final class IrizAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var floatingPanel: FloatingPanelController?
     private var menuBarController: MenuBarController?
     private var mainWindow: NSWindow?
     private var floatingVisibilityCancellable: AnyCancellable?
-    private var didSizeMainWindow = false
+    private var floatingBubbleEnabled = SettingsStore.shared.settings.showFloatingBubble
+    private var mainWindowPresented = true
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -55,8 +65,9 @@ final class IrizAppDelegate: NSObject, NSApplicationDelegate {
         floatingVisibilityCancellable = SettingsStore.shared.$settings
             .map(\.showFloatingBubble)
             .removeDuplicates()
-            .sink { [weak self] isVisible in
-                self?.floatingPanel?.setVisible(isVisible)
+            .sink { [weak self] isEnabled in
+                self?.floatingBubbleEnabled = isEnabled
+                self?.updateFloatingVisibility()
             }
         menuBarController = MenuBarController(app: .shared, settings: .shared)
         DispatchQueue.main.async { [weak self] in
@@ -81,41 +92,94 @@ final class IrizAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldRestoreSecureApplicationState(_ app: NSApplication) -> Bool { false }
 
     func registerMainWindow(_ window: NSWindow) {
-        mainWindow = window
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.isReleasedWhenClosed = false
-        window.isRestorable = false
-        guard !didSizeMainWindow, let screen = window.screen ?? NSScreen.main else { return }
-        didSizeMainWindow = true
-        window.setFrame(screen.visibleFrame, display: true)
-    }
-
-    private func showMainWindow() {
-        NSApp.activate(ignoringOtherApps: true)
-        if let mainWindow {
+        if let mainWindow, mainWindow !== window {
+            window.orderOut(nil)
+            window.close()
+            maximize(mainWindow)
             mainWindow.makeKeyAndOrderFront(nil)
             return
         }
 
-        // WindowGroup owns creation of the SwiftUI window. Reuse its standard
-        // Command-N action instead of guessing among unrelated system windows.
-        let newWindowItem = NSApp.mainMenu?.items
-            .compactMap(\.submenu)
-            .flatMap(\.items)
-            .first {
-                $0.keyEquivalent.lowercased() == "n" &&
-                $0.keyEquivalentModifierMask.contains(.command)
-            }
-        if let newWindowItem, let action = newWindowItem.action {
-            NSApp.sendAction(action, to: newWindowItem.target, from: newWindowItem)
+        mainWindow = window
+        window.delegate = self
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.isReleasedWhenClosed = false
+        window.isRestorable = false
+        window.minSize = NSSize(width: 900, height: 620)
+        mainWindowPresented = window.isVisible
+        updateFloatingVisibility()
+        maximize(window)
+    }
+
+    private func showMainWindow() {
+        mainWindowPresented = true
+        updateFloatingVisibility()
+        NSApp.activate(ignoringOtherApps: true)
+        if let mainWindow {
+            maximize(mainWindow)
+            mainWindow.makeKeyAndOrderFront(nil)
+            return
         }
+
+        // The singleton SwiftUI Window scene is created during launch. If its
+        // resolver has not attached yet, wait for it instead of synthesizing a
+        // New Window command that could create a second, smaller window.
         DispatchQueue.main.async { [weak self] in
-            self?.mainWindow?.makeKeyAndOrderFront(nil)
+            guard let self, let mainWindow = self.mainWindow else { return }
+            self.maximize(mainWindow)
+            mainWindow.makeKeyAndOrderFront(nil)
         }
+    }
+
+    private func maximize(_ window: NSWindow) {
+        guard let screen = window.screen ?? NSScreen.main else { return }
+        window.setFrame(
+            MainWindowPresentationPolicy.targetFrame(for: screen.visibleFrame),
+            display: true
+        )
     }
 
     @objc private func openMainWindowRequested(_ notification: Notification) {
         showMainWindow()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === mainWindow else { return }
+        mainWindowPresented = false
+        updateFloatingVisibility()
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === mainWindow else { return }
+        mainWindowPresented = true
+        updateFloatingVisibility()
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === mainWindow else { return }
+        mainWindowPresented = true
+        maximize(window)
+        updateFloatingVisibility()
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === mainWindow else { return }
+        mainWindowPresented = true
+        maximize(window)
+        updateFloatingVisibility()
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === mainWindow else { return }
+        maximize(window)
+        updateFloatingVisibility()
+    }
+
+    private func updateFloatingVisibility() {
+        floatingPanel?.setVisible(FloatingVisibilityPolicy.shouldShow(
+            settingEnabled: floatingBubbleEnabled,
+            mainWindowPresented: mainWindowPresented
+        ))
     }
 }
 

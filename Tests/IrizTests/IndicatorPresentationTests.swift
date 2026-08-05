@@ -170,6 +170,45 @@ struct IndicatorPresentationTests {
         #expect(IrizIndicatorMetrics.ringOutset == 2)
         #expect(IrizIndicatorMetrics.canvasSize(for: 46) == 50)
         #expect(IrizIndicatorMetrics.collapsedPanelSize == 60)
+        #expect(ObservationControlMetrics.cardWidth == 276)
+        #expect(ObservationControlMetrics.floatingWidth == 282)
+        #expect(ObservationControlMetrics.cardHeight == 313)
+        #expect(ObservationControlMetrics.floatingHeight == 335)
+    }
+
+    @Test("Permission status routes directly to Privacy")
+    func permissionSettingsDestination() {
+        #expect(IndicatorSettingsDestination.category(
+            for: .permissionNeeded("Screen Recording")
+        ) == .privacy)
+        #expect(IndicatorSettingsDestination.category(for: .observing) == nil)
+        #expect(IndicatorSettingsDestination.category(for: .error("Network")) == nil)
+        #expect(SettingsCategory.allCases.map(\.rawValue) == [
+            "Capture", "AI & Language", "Memory", "Privacy"
+        ])
+    }
+
+    @Test("The floating bubble and main window are mutually exclusive")
+    func floatingVisibility() {
+        #expect(FloatingVisibilityPolicy.shouldShow(
+            settingEnabled: true,
+            mainWindowPresented: false
+        ))
+        #expect(!FloatingVisibilityPolicy.shouldShow(
+            settingEnabled: true,
+            mainWindowPresented: true
+        ))
+        #expect(!FloatingVisibilityPolicy.shouldShow(
+            settingEnabled: false,
+            mainWindowPresented: false
+        ))
+    }
+
+    @Test("The application exposes one maximized main window")
+    func mainWindowPolicy() {
+        let visibleFrame = CGRect(x: 12, y: 34, width: 1440, height: 900)
+        #expect(!MainWindowPresentationPolicy.allowsMultipleMainWindows)
+        #expect(MainWindowPresentationPolicy.targetFrame(for: visibleFrame) == visibleFrame)
     }
 
     @Test("Only OpenAI activity rotates while border thickness stays fixed")
@@ -212,6 +251,8 @@ struct IndicatorPresentationTests {
         #expect(IndicatorScenario.all.contains { $0.id == "intensive-api" })
         #expect(IndicatorScenario.all.contains { $0.id == "blocking-error" })
         #expect(IndicatorScenario.all.contains { $0.id == "api-failure" })
+        #expect(IndicatorSimulatorLayout.groupsBeforePreview == [.everyday, .localActivity])
+        #expect(IndicatorSimulatorLayout.groupsAfterPreview == [.openAI, .outcomesAndAttention])
     }
 
     @Test("VoiceOver announces meaningful production presentation changes")

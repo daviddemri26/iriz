@@ -75,34 +75,52 @@ struct AssistantView: View {
 
     private func conversationButton(_ conversation: AssistantConversation) -> some View {
         let isSelected = app.selectedAssistantConversationID == conversation.id
-        return Button {
-            app.selectAssistantConversation(conversation.id)
-        } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(conversation.title)
-                    .font(.callout.weight(isSelected ? .semibold : .medium))
-                    .foregroundStyle(Color.primary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                HStack(spacing: 5) {
-                    Text(conversation.updatedAt, format: .relative(presentation: .named))
-                    Text("·")
-                    Text("\(conversation.answers.count) repl\(conversation.answers.count == 1 ? "y" : "ies")")
+        return HStack(spacing: 2) {
+            Button {
+                app.selectAssistantConversation(conversation.id)
+            } label: {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(conversation.title)
+                        .font(.callout.weight(isSelected ? .semibold : .medium))
+                        .foregroundStyle(Color.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    HStack(spacing: 5) {
+                        Text(conversation.updatedAt, format: .relative(presentation: .named))
+                        Text("·")
+                        Text("\(conversation.answers.count) repl\(conversation.answers.count == 1 ? "y" : "ies")")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                .padding(.leading, 10)
+                .padding(.vertical, 7)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(
-                isSelected ? Color.primary.opacity(0.10) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            Button {
+                Task { await app.toggleAssistantConversationPinned(conversation.id) }
+            } label: {
+                Image(systemName: conversation.pinnedAt == nil ? "pin" : "pin.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(conversation.pinnedAt == nil ? Color.secondary : IrizTheme.violet)
+                    .frame(width: 28, height: 34)
+            }
+            .buttonStyle(.plain)
+            .help(conversation.pinnedAt == nil ? "Pin conversation" : "Unpin conversation")
+            .accessibilityLabel(conversation.pinnedAt == nil ? "Pin conversation" : "Unpin conversation")
         }
-        .buttonStyle(.plain)
+        .padding(.trailing, 4)
+        .background(
+            isSelected ? Color.primary.opacity(0.10) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
         .contextMenu {
+            Button(conversation.pinnedAt == nil ? "Pin Conversation" : "Unpin Conversation") {
+                Task { await app.toggleAssistantConversationPinned(conversation.id) }
+            }
             Button("Delete Conversation", role: .destructive) {
                 Task { await app.deleteAssistantConversation(conversation.id) }
             }
@@ -132,6 +150,20 @@ struct AssistantView: View {
                     .lineLimit(2)
             }
             Spacer()
+            if let conversation = app.selectedAssistantConversation {
+                Button {
+                    Task { await app.toggleAssistantConversationPinned(conversation.id) }
+                } label: {
+                    Label(
+                        conversation.pinnedAt == nil ? "Pin" : "Unpin",
+                        systemImage: conversation.pinnedAt == nil ? "pin" : "pin.slash"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .help(conversation.pinnedAt == nil
+                    ? "Keep this conversation in the main sidebar"
+                    : "Remove this conversation from the main sidebar")
+            }
             Button {
                 app.startNewAssistantConversation()
             } label: {

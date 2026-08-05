@@ -175,7 +175,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func openSettings() {
-        app.openMainWindow(section: .settings)
+        app.openSettings()
     }
 
     @objc private func quit() {

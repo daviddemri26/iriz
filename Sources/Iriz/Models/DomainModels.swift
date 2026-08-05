@@ -919,19 +919,22 @@ struct AssistantConversation: Codable, Identifiable, Sendable {
     var answers: [AssistantAnswer]
     var createdAt: Date
     var updatedAt: Date
+    var pinnedAt: Date?
 
     init(
         id: UUID = UUID(),
         title: String = "New conversation",
         answers: [AssistantAnswer] = [],
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        pinnedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
         self.answers = answers
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.pinnedAt = pinnedAt
     }
 
     static func title(for firstQuestion: String) -> String {
@@ -941,6 +944,28 @@ struct AssistantConversation: Codable, Identifiable, Sendable {
         guard !singleLine.isEmpty else { return "New conversation" }
         let prefix = String(singleLine.prefix(54))
         return prefix.count < singleLine.count ? "\(prefix)…" : prefix
+    }
+}
+
+enum AssistantConversationPinning {
+    static func pinned(
+        from conversations: [AssistantConversation]
+    ) -> [AssistantConversation] {
+        conversations
+            .filter { $0.pinnedAt != nil }
+            .sorted {
+                ($0.pinnedAt ?? .distantPast) > ($1.pinnedAt ?? .distantPast)
+            }
+    }
+
+    static func updating(
+        _ conversation: AssistantConversation,
+        isPinned: Bool,
+        at date: Date = Date()
+    ) -> AssistantConversation {
+        var updated = conversation
+        updated.pinnedAt = isPinned ? date : nil
+        return updated
     }
 }
 

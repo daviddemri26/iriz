@@ -1,14 +1,5 @@
 import SwiftUI
 
-private enum SettingsCategory: String, CaseIterable, Identifiable {
-    case capture = "Capture"
-    case intelligence = "AI & Language"
-    case memory = "Memory"
-    case privacy = "Privacy"
-
-    var id: String { rawValue }
-}
-
 struct SettingsView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var settings: SettingsStore
@@ -21,7 +12,6 @@ struct SettingsView: View {
     @State private var excludedWindowKeywords = ""
     @State private var message: String?
     @State private var pendingExport: ExportFormat?
-    @State private var selectedCategory: SettingsCategory = .capture
     @State private var isConfirmingFollowUpReset = false
 
     var body: some View {
@@ -32,7 +22,7 @@ struct SettingsView: View {
                     Text("Iriz is local first. You decide what it can observe and what leaves your Mac.")
                         .foregroundStyle(.secondary)
                 }
-                Picker("Settings category", selection: $selectedCategory) {
+                Picker("Settings category", selection: $app.selectedSettingsCategory) {
                     ForEach(SettingsCategory.allCases) { category in
                         Text(category.rawValue).tag(category)
                     }
@@ -93,7 +83,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var selectedCategoryContent: some View {
-        switch selectedCategory {
+        switch app.selectedSettingsCategory {
         case .capture:
             captureSection
             quickAccessSection

@@ -399,6 +399,15 @@ enum MainSection: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum SettingsCategory: String, CaseIterable, Identifiable, Sendable {
+    case capture = "Capture"
+    case intelligence = "AI & Language"
+    case memory = "Memory"
+    case privacy = "Privacy"
+
+    var id: String { rawValue }
+}
+
 struct LanguageOption: Identifiable, Hashable, Sendable {
     var id: String { identifier }
     var identifier: String

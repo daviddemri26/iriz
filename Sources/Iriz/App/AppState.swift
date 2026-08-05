@@ -23,6 +23,7 @@ final class AppState: ObservableObject {
     static let shared = AppState()
 
     @Published var selectedSection: MainSection = .assistant
+    @Published var selectedSettingsCategory: SettingsCategory = .capture
     @Published private(set) var events: [ActivityEvent] = []
     @Published private(set) var commitments: [Commitment] = []
     @Published private(set) var resolvedCommitments: [Commitment] = []
@@ -748,6 +749,10 @@ final class AppState: ObservableObject {
         selectedAssistantConversation?.answers ?? []
     }
 
+    var pinnedAssistantConversations: [AssistantConversation] {
+        AssistantConversationPinning.pinned(from: assistantConversations)
+    }
+
     func startNewAssistantConversation() {
         isComposingNewAssistantConversation = true
         selectedAssistantConversationID = nil
@@ -757,6 +762,21 @@ final class AppState: ObservableObject {
         guard assistantConversations.contains(where: { $0.id == id }) else { return }
         isComposingNewAssistantConversation = false
         selectedAssistantConversationID = id
+    }
+
+    func setAssistantConversationPinned(_ id: UUID, isPinned: Bool) async {
+        guard let index = assistantConversations.firstIndex(where: { $0.id == id }) else { return }
+        let updated = AssistantConversationPinning.updating(
+            assistantConversations[index],
+            isPinned: isPinned
+        )
+        assistantConversations[index] = updated
+        try? await repository?.saveAssistantConversation(updated)
+    }
+
+    func toggleAssistantConversationPinned(_ id: UUID) async {
+        guard let conversation = assistantConversations.first(where: { $0.id == id }) else { return }
+        await setAssistantConversationPinned(id, isPinned: conversation.pinnedAt == nil)
     }
 
     func deleteAssistantConversation(_ id: UUID) async {
@@ -1477,6 +1497,11 @@ final class AppState: ObservableObject {
     func openMainWindow(section: MainSection? = nil) {
         if let section { selectedSection = section }
         NotificationCenter.default.post(name: .irizOpenMainWindow, object: nil)
+    }
+
+    func openSettings(category: SettingsCategory? = nil) {
+        if let category { selectedSettingsCategory = category }
+        openMainWindow(section: .settings)
     }
 
     func testAPIKey(_ candidate: String) async {
