@@ -22,7 +22,7 @@ struct FollowUpView: View {
                     VStack(spacing: 0) {
                         header
                         Divider()
-                        filterBar
+                        filterAndCompletedHeader
                         Divider()
                         if settings.settings.followUpDisplay.completedRailMode == .expanded {
                             completedArchive(now: timeline.date)
@@ -173,26 +173,36 @@ struct FollowUpView: View {
                     .lineLimit(2)
                     .frame(maxWidth: 260, alignment: .trailing)
             }
-            Button {
-                isCreating = true
-            } label: {
-                Label("New Follow Up", systemImage: "plus")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(IrizTheme.violet)
-
-            Button {
-                withAnimation(.snappy(duration: 0.2)) {
-                    settings.settings.followUpDisplay.completedRailMode = preferences.completedRailMode == .collapsed
-                        ? .rail
-                        : .collapsed
+            VStack(alignment: .trailing, spacing: 5) {
+                Button {
+                    isCreating = true
+                } label: {
+                    Label("Add a Manual Follow Up", systemImage: "plus")
                 }
-            } label: {
-                Label("Completed \(app.resolvedCommitments.count)", systemImage: "checkmark.seal")
+                .buttonStyle(.borderedProminent)
+                .tint(IrizTheme.violet)
+
+                Text("Iriz usually adds follow-ups for you. Add one yourself if needed.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 280, alignment: .trailing)
             }
-            .buttonStyle(.bordered)
         }
         .padding(22)
+    }
+
+    private var filterAndCompletedHeader: some View {
+        HStack(spacing: 0) {
+            filterBar
+                .frame(maxWidth: .infinity)
+            if shouldShowCompletedRail {
+                Divider()
+                completedRailHeader
+                    .frame(width: 232)
+            }
+        }
+        .frame(height: 80)
     }
 
     private var filterBar: some View {
@@ -204,6 +214,9 @@ struct FollowUpView: View {
                     subjectMenu
                     Spacer(minLength: 8)
                     searchField
+                    if !shouldShowCompletedRail {
+                        completedRailToggleButton
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 9) {
@@ -215,6 +228,9 @@ struct FollowUpView: View {
                     }
                     searchField
                         .frame(maxWidth: .infinity)
+                    if !shouldShowCompletedRail {
+                        completedRailToggleButton
+                    }
                 }
             }
 
@@ -231,8 +247,41 @@ struct FollowUpView: View {
                 }
             }
         }
-        .padding(.horizontal, 22)
+        .padding(.leading, 22)
+        .padding(.trailing, shouldShowCompletedRail ? 14 : 22)
         .padding(.vertical, 12)
+    }
+
+    private var completedRailHeader: some View {
+        HStack(spacing: 10) {
+            completedRailToggleButton
+            Spacer(minLength: 0)
+            Button {
+                withAnimation(.snappy(duration: 0.2)) {
+                    settings.settings.followUpDisplay.completedRailMode = .expanded
+                }
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+            }
+            .buttonStyle(.plain)
+            .help("Open completed history")
+        }
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.primary.opacity(0.018))
+    }
+
+    private var completedRailToggleButton: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.2)) {
+                settings.settings.followUpDisplay.completedRailMode = isCompletedVisible ? .collapsed : .rail
+            }
+        } label: {
+            Label("Completed \(app.resolvedCommitments.count)", systemImage: "checkmark.seal")
+                .lineLimit(1)
+        }
+        .buttonStyle(.bordered)
+        .help(isCompletedVisible ? "Hide completed follow-ups" : "Show completed follow-ups")
     }
 
     private func viewModePicker(width: CGFloat) -> some View {
@@ -475,6 +524,10 @@ struct FollowUpView: View {
         preferences.completedRailMode == .rail
     }
 
+    private var isCompletedVisible: Bool {
+        preferences.completedRailMode != .collapsed
+    }
+
     private func recentCompleted(now: Date) -> [Commitment] {
         let cutoff = now.addingTimeInterval(-preferences.completedRailDuration.interval)
         return app.resolvedCommitments
@@ -486,40 +539,20 @@ struct FollowUpView: View {
 
     private func completedRail(now: Date) -> some View {
         VStack(spacing: 0) {
-            VStack(spacing: 8) {
-                HStack(spacing: 7) {
-                    Image(systemName: "checkmark.seal.fill")
-                        .foregroundStyle(IrizTheme.mint)
-                    Text("Completed")
-                        .font(.headline)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                    Spacer(minLength: 4)
-                    Button {
-                        withAnimation(.snappy(duration: 0.2)) {
-                            settings.settings.followUpDisplay.completedRailMode = .expanded
-                        }
-                    } label: {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    }
-                    .buttonStyle(.plain)
-                    .help("Open completed history")
-                }
-                HStack(spacing: 6) {
-                    Text("Showing")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 2)
-                    Menu(preferences.completedRailDuration.displayName) {
-                        ForEach(CompletedRailDuration.allCases) { duration in
-                            Button(duration.displayName) {
-                                settings.settings.followUpDisplay.completedRailDuration = duration
-                            }
+            HStack(spacing: 6) {
+                Text("Showing")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 2)
+                Menu(preferences.completedRailDuration.displayName) {
+                    ForEach(CompletedRailDuration.allCases) { duration in
+                        Button(duration.displayName) {
+                            settings.settings.followUpDisplay.completedRailDuration = duration
                         }
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
                 }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
             .padding(14)
             Divider()
@@ -1170,8 +1203,9 @@ private struct NewFollowUpSheet: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("New Follow Up").font(.title2.weight(.bold))
-                    Text("Only the title is required.").foregroundStyle(.secondary)
+                    Text("Add a Manual Follow Up").font(.title2.weight(.bold))
+                    Text("Iriz usually creates follow-ups automatically. Add one yourself when needed.")
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Cancel") { completion(nil); dismiss() }
