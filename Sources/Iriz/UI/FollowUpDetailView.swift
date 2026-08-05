@@ -53,7 +53,7 @@ struct FollowUpDetailView: View {
                 tabContent
             }
         }
-        .frame(width: 780, height: selectedTab == nil ? 490 : 700)
+        .frame(width: 780, height: selectedTab == nil ? 490 : 700, alignment: .top)
         .background(detailBackground)
         .animation(.snappy(duration: 0.22), value: selectedTab)
         .onAppear {
@@ -165,7 +165,7 @@ struct FollowUpDetailView: View {
             }
         }
         .padding(.horizontal, 22)
-        .padding(.top, 18)
+        .padding(.top, 14)
         .padding(.bottom, 16)
     }
 

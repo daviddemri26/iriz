@@ -16,7 +16,7 @@ struct FollowUpView: View {
     @State private var canvasNoticeTask: Task<Void, Never>?
 
     var body: some View {
-        ZStack(alignment: .bottom) {
+        ZStack {
             TimelineView(.periodic(from: .now, by: 60)) { timeline in
                 GeometryReader { geometry in
                     VStack(spacing: 0) {
@@ -46,6 +46,8 @@ struct FollowUpView: View {
                 canvasNoticeBanner(notice)
                     .padding(.horizontal, 24)
                     .padding(.bottom, 24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .allowsHitTesting(false)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .zIndex(5)
             }
