@@ -25,6 +25,28 @@ struct MainWindowView: View {
         .frame(minWidth: 900, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
         .background(IrizTheme.canvas)
         .task { await app.refresh() }
+        .alert(
+            "These follow-ups may be unrelated",
+            isPresented: Binding(
+                get: { app.pendingFollowUpMergeConfirmation != nil },
+                set: { isPresented in
+                    if !isPresented, app.pendingFollowUpMergeConfirmation != nil {
+                        app.cancelPendingFollowUpMerge()
+                    }
+                }
+            )
+        ) {
+            Button("Cancel", role: .cancel) {
+                app.cancelPendingFollowUpMerge()
+            }
+            Button("Merge Anyway", role: .destructive) {
+                Task { await app.confirmPendingFollowUpMerge() }
+            }
+        } message: {
+            if let warning = app.pendingFollowUpMergeConfirmation {
+                Text(mergeWarningMessage(warning))
+            }
+        }
     }
 
     private var sidebar: some View {
@@ -82,5 +104,13 @@ struct MainWindowView: View {
         case .assistant: AssistantView()
         case .settings: SettingsView()
         }
+    }
+
+    private func mergeWarningMessage(_ warning: PendingFollowUpMergeConfirmation) -> String {
+        let actions = warning.sourceActions
+            .prefix(4)
+            .map { "• \($0)" }
+            .joined(separator: "\n")
+        return "\(warning.reason)\n\n\(actions)\n\nDo you want to merge them anyway?"
     }
 }

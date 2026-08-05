@@ -7,6 +7,9 @@ enum SQLiteStoreError: LocalizedError {
     case sqlite(code: Int32, message: String, sql: String?)
     case serializationFailed
     case invalidStoredData
+    case invalidCommitment(String)
+    case invalidFollowUpSubject(String)
+    case invalidFollowUpType(String)
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +18,9 @@ enum SQLiteStoreError: LocalizedError {
             "SQLite error \(code): \(message)\(sql.map { " while running \($0)" } ?? "")"
         case .serializationFailed: "The local journal could not be encrypted."
         case .invalidStoredData: "The encrypted journal could not be decoded."
+        case .invalidCommitment(let reason): "The follow-up could not be saved: \(reason)"
+        case .invalidFollowUpSubject(let reason): "The follow-up subject could not be saved: \(reason)"
+        case .invalidFollowUpType(let reason): "The follow-up type could not be saved: \(reason)"
         }
     }
 }
@@ -219,48 +225,159 @@ actor EncryptedSQLiteStore: LogRepository {
     }
 
     func saveCommitment(_ commitment: Commitment) async throws {
+        try validate(commitment)
         let payload = try encoder.encode(commitment)
-        let reviewAt = commitment.explicitDueAt ?? commitment.suggestedReviewAt
+        try upsertCommitment(commitment, payload: payload)
+        try persist()
+    }
+
+    func commitments(includingClosed: Bool = false) async throws -> [Commitment] {
+        let records = try commitmentRecords()
+        try migrateLegacyCommitmentsAndSubjects(records)
+        let values = records.lazy.map(\.commitment).filter {
+            includingClosed || ($0.lifecycle != .completed && $0.lifecycle != .dismissed)
+        }
+        return values.sorted {
+            if $0.surfacedAt != $1.surfacedAt { return $0.surfacedAt > $1.surfacedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    func replaceCommitments(
+        with mergedCommitment: Commitment,
+        deletingSourceIDs sourceIDs: [UUID]
+    ) async throws {
+        try validate(mergedCommitment)
+        let payload = try encoder.encode(mergedCommitment)
+        let identifiersToDelete = Set(sourceIDs).subtracting([mergedCommitment.id])
+
+        try transaction {
+            // The replacement is encoded, validated, and inserted before any source row is removed.
+            try upsertCommitment(mergedCommitment, payload: payload)
+            for identifier in identifiersToDelete {
+                try execute("DELETE FROM commitments WHERE id = ?", [.text(identifier.uuidString)])
+            }
+        }
+        try persist()
+    }
+
+    func saveFollowUpSubject(_ subject: FollowUpSubject) async throws {
+        try validate(subject)
+        let payload = try encoder.encode(subject)
         try execute(
             """
-            INSERT INTO commitments (id, event_id, state, review_at, confidence, payload)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO follow_up_subjects (id, name, area, updated_at, payload)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                event_id = excluded.event_id,
-                state = excluded.state,
-                review_at = excluded.review_at,
-                confidence = excluded.confidence,
+                name = excluded.name,
+                area = excluded.area,
+                updated_at = excluded.updated_at,
                 payload = excluded.payload
             """,
             [
-                .text(commitment.id.uuidString),
-                .text(commitment.eventID.uuidString),
-                .text(commitment.state.rawValue),
-                reviewAt.map { .double($0.timeIntervalSince1970) } ?? .null,
-                .double(commitment.confidence),
+                .text(subject.id),
+                .text(subject.name),
+                .text(subject.area.rawValue),
+                .double(subject.updatedAt.timeIntervalSince1970),
                 .blob(payload)
             ]
         )
         try persist()
     }
 
-    func commitments(includingClosed: Bool = false) async throws -> [Commitment] {
-        let sql: String
-        if includingClosed {
-            sql = "SELECT payload FROM commitments ORDER BY COALESCE(review_at, 9999999999) ASC"
-        } else {
-            sql = "SELECT payload FROM commitments WHERE state NOT IN ('completed', 'dismissed') ORDER BY COALESCE(review_at, 9999999999) ASC"
-        }
-        let statement = try prepare(sql)
+    func followUpSubject(id: String) async throws -> FollowUpSubject? {
+        try migrateLegacyCommitmentsAndSubjects(commitmentRecords())
+        let statement = try prepare("SELECT payload FROM follow_up_subjects WHERE id = ? LIMIT 1")
         defer { sqlite3_finalize(statement) }
-        var values: [Commitment] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            if let data = blob(at: 0, statement: statement),
-               let commitment = try? decoder.decode(Commitment.self, from: data) {
-                values.append(commitment)
+        try bind([.text(id)], to: statement)
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { return nil }
+        guard code == SQLITE_ROW else {
+            throw sqliteError(code: code, sql: "SELECT payload FROM follow_up_subjects WHERE id = ? LIMIT 1")
+        }
+        guard let data = blob(at: 0, statement: statement) else {
+            throw SQLiteStoreError.invalidStoredData
+        }
+        return try decoder.decode(FollowUpSubject.self, from: data)
+    }
+
+    func followUpSubjects() async throws -> [FollowUpSubject] {
+        try migrateLegacyCommitmentsAndSubjects(commitmentRecords())
+        let statement = try prepare(
+            "SELECT payload FROM follow_up_subjects ORDER BY name COLLATE NOCASE ASC, id ASC"
+        )
+        defer { sqlite3_finalize(statement) }
+        var values: [FollowUpSubject] = []
+        while true {
+            let code = sqlite3_step(statement)
+            if code == SQLITE_DONE { break }
+            guard code == SQLITE_ROW else {
+                throw sqliteError(code: code, sql: "SELECT payload FROM follow_up_subjects")
             }
+            guard let data = blob(at: 0, statement: statement) else {
+                throw SQLiteStoreError.invalidStoredData
+            }
+            values.append(try decoder.decode(FollowUpSubject.self, from: data))
         }
         return values
+    }
+
+    func deleteFollowUpSubject(id: String) async throws {
+        try execute("DELETE FROM follow_up_subjects WHERE id = ?", [.text(id)])
+        try persist()
+    }
+
+    func saveFollowUpType(_ type: FollowUpType) async throws {
+        try validate(type)
+        let payload = try encoder.encode(type)
+        try execute(
+            """
+            INSERT INTO follow_up_types (id, name, updated_at, payload)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                updated_at = excluded.updated_at,
+                payload = excluded.payload
+            """,
+            [
+                .text(type.id),
+                .text(type.name),
+                .double(type.updatedAt.timeIntervalSince1970),
+                .blob(payload)
+            ]
+        )
+        try persist()
+    }
+
+    func followUpTypes() async throws -> [FollowUpType] {
+        let statement = try prepare("SELECT payload FROM follow_up_types ORDER BY name COLLATE NOCASE ASC, id ASC")
+        defer { sqlite3_finalize(statement) }
+        var values: [FollowUpType] = []
+        while true {
+            let code = sqlite3_step(statement)
+            if code == SQLITE_DONE { break }
+            guard code == SQLITE_ROW else {
+                throw sqliteError(code: code, sql: "SELECT payload FROM follow_up_types")
+            }
+            guard let data = blob(at: 0, statement: statement) else {
+                throw SQLiteStoreError.invalidStoredData
+            }
+            values.append(try decoder.decode(FollowUpType.self, from: data))
+        }
+        return values
+    }
+
+    func deleteFollowUpType(id: String) async throws {
+        try execute("DELETE FROM follow_up_types WHERE id = ?", [.text(id)])
+        try persist()
+    }
+
+    func resetFollowUps() async throws {
+        try transaction {
+            try execute("DELETE FROM commitments")
+            try execute("DELETE FROM follow_up_subjects")
+        }
+        try persist()
     }
 
     func saveAssistantConversation(_ conversation: AssistantConversation) async throws {
@@ -304,6 +421,17 @@ actor EncryptedSQLiteStore: LogRepository {
     }
 
     func purgeExpired(now: Date = Date(), retention: StructuredRetention) async throws {
+        let expiredCompletedIDs: [UUID]
+        if let interval = retention.cutoffInterval {
+            let cutoff = now.addingTimeInterval(-interval)
+            expiredCompletedIDs = try commitmentRecords().compactMap { record in
+                guard record.commitment.lifecycle == .completed,
+                      (record.commitment.completedAt ?? record.commitment.updatedAt) < cutoff else { return nil }
+                return record.commitment.id
+            }
+        } else {
+            expiredCompletedIDs = []
+        }
         try transaction {
             try execute("DELETE FROM observations WHERE expires_at <= ?", [.double(now.timeIntervalSince1970)])
             if let interval = retention.cutoffInterval {
@@ -313,6 +441,9 @@ actor EncryptedSQLiteStore: LogRepository {
                     try execute("DELETE FROM event_fts WHERE id = ?", [.text(id)])
                 }
                 try execute("DELETE FROM events WHERE ended_at < ?", [.double(cutoff)])
+            }
+            for id in expiredCompletedIDs {
+                try execute("DELETE FROM commitments WHERE id = ?", [.text(id.uuidString)])
             }
         }
         try persist()
@@ -355,6 +486,179 @@ actor EncryptedSQLiteStore: LogRepository {
             }
         }
         return values
+    }
+
+    private func upsertCommitment(_ commitment: Commitment, payload: Data) throws {
+        let reviewAt = commitment.snoozedUntil ?? commitment.explicitDueAt
+        try execute(
+            """
+            INSERT INTO commitments (id, event_id, state, review_at, confidence, payload)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                event_id = excluded.event_id,
+                state = excluded.state,
+                review_at = excluded.review_at,
+                confidence = excluded.confidence,
+                payload = excluded.payload
+            """,
+            [
+                .text(commitment.id.uuidString),
+                .text(commitment.eventID.uuidString),
+                .text(commitment.lifecycle.rawValue),
+                reviewAt.map { .double($0.timeIntervalSince1970) } ?? .null,
+                .double(commitment.confidence),
+                .blob(payload)
+            ]
+        )
+    }
+
+    private func commitmentRecords() throws -> [(commitment: Commitment, requiresMigration: Bool)] {
+        let statement = try prepare("SELECT payload FROM commitments")
+        defer { sqlite3_finalize(statement) }
+        var records: [(commitment: Commitment, requiresMigration: Bool)] = []
+        while true {
+            let code = sqlite3_step(statement)
+            if code == SQLITE_DONE { break }
+            guard code == SQLITE_ROW else {
+                throw sqliteError(code: code, sql: "SELECT payload FROM commitments")
+            }
+            guard let data = blob(at: 0, statement: statement) else {
+                throw SQLiteStoreError.invalidStoredData
+            }
+            let commitment = try decoder.decode(Commitment.self, from: data)
+            records.append((commitment, isLegacyCommitmentPayload(data)))
+        }
+        return records
+    }
+
+    private func isLegacyCommitmentPayload(_ payload: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+            return false
+        }
+        return object["lifecycle"] == nil
+    }
+
+    private func migrateLegacyCommitmentsAndSubjects(
+        _ records: [(commitment: Commitment, requiresMigration: Bool)]
+    ) throws {
+        var subjectsByID: [String: FollowUpSubject] = [:]
+        for record in records {
+            let commitment = record.commitment
+            guard let subjectID = commitment.subjectID,
+                  let label = commitment.contextLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !label.isEmpty else { continue }
+            let candidate = FollowUpSubject(
+                id: subjectID,
+                name: label,
+                area: commitment.area,
+                color: .stable(for: label),
+                createdAt: commitment.createdAt,
+                updatedAt: commitment.updatedAt
+            )
+            if let existing = subjectsByID[subjectID] {
+                if candidate.updatedAt > existing.updatedAt { subjectsByID[subjectID] = candidate }
+            } else {
+                subjectsByID[subjectID] = candidate
+            }
+        }
+
+        if !subjectsByID.isEmpty {
+            let existingIDs = Set(try stringColumn(sql: "SELECT id FROM follow_up_subjects", arguments: []))
+            subjectsByID = subjectsByID.filter { !existingIDs.contains($0.key) }
+        }
+
+        guard records.contains(where: { $0.requiresMigration }) || !subjectsByID.isEmpty else { return }
+        var madeChanges = false
+        try transaction {
+            for record in records where record.requiresMigration {
+                let commitment = record.commitment
+                let payload = try encoder.encode(commitment)
+                let reviewAt = commitment.snoozedUntil ?? commitment.explicitDueAt ?? commitment.suggestedReviewAt
+                try execute(
+                    """
+                    UPDATE commitments
+                    SET state = ?, review_at = ?, confidence = ?, payload = ?
+                    WHERE id = ?
+                    """,
+                    [
+                        .text(commitment.lifecycle.rawValue),
+                        reviewAt.map { .double($0.timeIntervalSince1970) } ?? .null,
+                        .double(commitment.confidence),
+                        .blob(payload),
+                        .text(commitment.id.uuidString)
+                    ]
+                )
+                madeChanges = true
+            }
+
+            for subject in subjectsByID.values {
+                let payload = try encoder.encode(subject)
+                try execute(
+                    """
+                    INSERT OR IGNORE INTO follow_up_subjects (id, name, area, updated_at, payload)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [
+                        .text(subject.id),
+                        .text(subject.name),
+                        .text(subject.area.rawValue),
+                        .double(subject.updatedAt.timeIntervalSince1970),
+                        .blob(payload)
+                    ]
+                )
+                if let database, sqlite3_changes(database) > 0 { madeChanges = true }
+            }
+        }
+        if madeChanges { try persist() }
+    }
+
+    private func validate(_ commitment: Commitment) throws {
+        guard !commitment.action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SQLiteStoreError.invalidCommitment("an action is required")
+        }
+        guard commitment.confidence.isFinite, (0...1).contains(commitment.confidence) else {
+            throw SQLiteStoreError.invalidCommitment("confidence must be between 0 and 1")
+        }
+        guard (0...10).contains(commitment.aiPriorityScore) else {
+            throw SQLiteStoreError.invalidCommitment("AI priority must be between 0 and 10")
+        }
+        guard (0...10).contains(commitment.displayPriorityScore) else {
+            throw SQLiteStoreError.invalidCommitment("display priority must be between 0 and 10")
+        }
+        if let userPriorityScore = commitment.userPriorityScore, !(0...10).contains(userPriorityScore) {
+            throw SQLiteStoreError.invalidCommitment("user priority must be between 0 and 10")
+        }
+        if let dueConfidence = commitment.dueConfidence,
+           (!dueConfidence.isFinite || !(0...1).contains(dueConfidence)) {
+            throw SQLiteStoreError.invalidCommitment("due-date confidence must be between 0 and 1")
+        }
+    }
+
+    private func validate(_ subject: FollowUpSubject) throws {
+        guard !subject.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SQLiteStoreError.invalidFollowUpSubject("an identifier is required")
+        }
+        guard !subject.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SQLiteStoreError.invalidFollowUpSubject("a name is required")
+        }
+        guard subject.priorityBias.isFinite, (-3...3).contains(subject.priorityBias) else {
+            throw SQLiteStoreError.invalidFollowUpSubject("priority bias must be between -3 and 3")
+        }
+        guard subject.correctionCount >= 0 else {
+            throw SQLiteStoreError.invalidFollowUpSubject("correction count cannot be negative")
+        }
+    }
+
+    private func validate(_ type: FollowUpType) throws {
+        guard !type.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SQLiteStoreError.invalidFollowUpType("an identifier is required")
+        }
+        guard !type.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SQLiteStoreError.invalidFollowUpType("a name is required")
+        }
+        guard !type.systemImage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SQLiteStoreError.invalidFollowUpType("an icon is required")
+        }
     }
 
     private func stringColumn(sql: String, arguments: [SQLiteBoundValue]) throws -> [String] {
@@ -520,6 +824,22 @@ actor EncryptedSQLiteStore: LogRepository {
             payload BLOB NOT NULL
         );
         CREATE INDEX IF NOT EXISTS commitments_state_review ON commitments(state, review_at);
+        CREATE TABLE IF NOT EXISTS follow_up_subjects (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            area TEXT NOT NULL,
+            updated_at REAL NOT NULL,
+            payload BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS follow_up_subjects_area_name ON follow_up_subjects(area, name COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS follow_up_subjects_updated_at ON follow_up_subjects(updated_at DESC);
+        CREATE TABLE IF NOT EXISTS follow_up_types (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            updated_at REAL NOT NULL,
+            payload BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS follow_up_types_name ON follow_up_types(name COLLATE NOCASE);
         CREATE TABLE IF NOT EXISTS assistant_conversations (
             id TEXT PRIMARY KEY NOT NULL,
             updated_at REAL NOT NULL,

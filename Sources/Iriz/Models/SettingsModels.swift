@@ -84,61 +84,102 @@ enum StructuredRetention: String, Codable, CaseIterable, Sendable {
     }
 }
 
-enum FollowUpSensitivity: String, Codable, CaseIterable, Identifiable, Sendable {
-    case essential
-    case focused
-    case balanced
-    case detailed
+enum FollowUpViewMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case active
+    case snoozed
+    case dismissed
+
+    var id: String { rawValue }
+
+    var displayName: String { rawValue.capitalized }
+}
+
+enum CompletedRailMode: String, Codable, CaseIterable, Sendable {
+    case collapsed
+    case rail
+    case expanded
+}
+
+enum CompletedRailDuration: String, Codable, CaseIterable, Identifiable, Sendable {
+    case oneHour
+    case sixHours
+    case oneDay
+    case threeDays
+    case sevenDays
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .essential: "Essential"
-        case .focused: "Focused"
-        case .balanced: "Balanced"
-        case .detailed: "Detailed"
+        case .oneHour: "1 hour"
+        case .sixHours: "6 hours"
+        case .oneDay: "24 hours"
+        case .threeDays: "3 days"
+        case .sevenDays: "7 days"
         }
     }
 
-    var explanation: String {
+    var interval: TimeInterval {
         switch self {
-        case .essential: "Only explicit deadlines and high-confidence, important actions."
-        case .focused: "Clear commitments and useful actions, with most minor loose ends ignored."
-        case .balanced: "Important actions plus credible everyday follow-ups. Recommended for most people."
-        case .detailed: "Includes smaller actionable details and lower-confidence possibilities in Maybe."
+        case .oneHour: 3_600
+        case .sixHours: 6 * 3_600
+        case .oneDay: 24 * 3_600
+        case .threeDays: 3 * 24 * 3_600
+        case .sevenDays: 7 * 24 * 3_600
         }
     }
+}
 
-    var promptGuidance: String {
-        switch self {
-        case .essential: "Extract only explicit or high-consequence commitments. Ignore minor errands, vague possibilities, and casual intentions."
-        case .focused: "Extract clear commitments and useful next actions. Ignore weak implications and low-value details."
-        case .balanced: "Extract clear commitments and credible implied next actions when they would be useful to remember."
-        case .detailed: "Also extract small but actionable loose ends. Put uncertain or weakly implied items in maybe rather than presenting them as facts."
-        }
+struct FollowUpDisplayPreferences: Codable, Equatable, Sendable {
+    var selectedArea: FollowUpArea?
+    var selectedTypeIDs: Set<String> = []
+    var selectedSubjectIDs: Set<String> = []
+    var selectedColorTokens: Set<FollowUpColorToken> = []
+    var minimumPriority = 0
+    var viewMode: FollowUpViewMode = .active
+    var completedRailMode: CompletedRailMode = .rail
+    var completedRailDuration: CompletedRailDuration = .oneDay
+
+    private enum CodingKeys: String, CodingKey {
+        case selectedArea
+        case selectedTypeIDs
+        case selectedSubjectIDs
+        case selectedColorTokens
+        case minimumPriority
+        case viewMode
+        case completedRailMode
+        case completedRailDuration
     }
 
-    var minimumConfidence: Double {
-        switch self {
-        case .essential: 0.86
-        case .focused: 0.76
-        case .balanced: 0.64
-        case .detailed: 0.48
-        }
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        selectedArea = try values.decodeIfPresent(FollowUpArea.self, forKey: .selectedArea)
+        selectedTypeIDs = try values.decodeIfPresent(Set<String>.self, forKey: .selectedTypeIDs) ?? []
+        selectedSubjectIDs = try values.decodeIfPresent(Set<String>.self, forKey: .selectedSubjectIDs) ?? []
+        selectedColorTokens = try values.decodeIfPresent(Set<FollowUpColorToken>.self, forKey: .selectedColorTokens) ?? []
+        minimumPriority = try values.decodeIfPresent(Int.self, forKey: .minimumPriority) ?? 0
+        viewMode = try values.decodeIfPresent(FollowUpViewMode.self, forKey: .viewMode) ?? .active
+        completedRailMode = try values.decodeIfPresent(CompletedRailMode.self, forKey: .completedRailMode) ?? .rail
+        completedRailDuration = try values.decodeIfPresent(CompletedRailDuration.self, forKey: .completedRailDuration) ?? .oneDay
+        clamp()
     }
 
-    var minimumImportance: EventImportance {
-        switch self {
-        case .essential: .important
-        case .focused, .balanced: .normal
-        case .detailed: .background
-        }
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encodeIfPresent(selectedArea, forKey: .selectedArea)
+        try values.encode(selectedTypeIDs, forKey: .selectedTypeIDs)
+        try values.encode(selectedSubjectIDs, forKey: .selectedSubjectIDs)
+        try values.encode(selectedColorTokens, forKey: .selectedColorTokens)
+        try values.encode(minimumPriority, forKey: .minimumPriority)
+        try values.encode(viewMode, forKey: .viewMode)
+        try values.encode(completedRailMode, forKey: .completedRailMode)
+        try values.encode(completedRailDuration, forKey: .completedRailDuration)
     }
 
-    func accepts(confidence: Double, importance: EventImportance, hasExplicitDueDate: Bool) -> Bool {
-        if hasExplicitDueDate { return confidence >= min(minimumConfidence, 0.65) }
-        return confidence >= minimumConfidence && importance >= minimumImportance
+    mutating func clamp() {
+        minimumPriority = min(max(minimumPriority, 0), 10)
     }
 }
 
@@ -178,7 +219,8 @@ struct IrizSettings: Codable, Equatable, Sendable {
     var meetingDetectionEnabled = true
     var voiceEnrollmentEnabled = false
     var outputLanguageTag = "auto"
-    var followUpSensitivity: FollowUpSensitivity = .balanced
+    var followUpDetailLevel: FollowUpDetailLevel = .standard
+    var followUpDisplay = FollowUpDisplayPreferences()
     var structuredRetention: StructuredRetention = .forever
     var mediaRetentionHours = 24
     var dailyDigestEnabled = true
@@ -241,7 +283,8 @@ struct IrizSettings: Codable, Equatable, Sendable {
         case meetingDetectionEnabled
         case voiceEnrollmentEnabled
         case outputLanguageTag
-        case followUpSensitivity
+        case followUpDetailLevel
+        case followUpDisplay
         case structuredRetention
         case mediaRetentionHours
         case dailyDigestEnabled
@@ -268,7 +311,11 @@ struct IrizSettings: Codable, Equatable, Sendable {
         meetingDetectionEnabled = try values.decodeIfPresent(Bool.self, forKey: .meetingDetectionEnabled) ?? true
         voiceEnrollmentEnabled = try values.decodeIfPresent(Bool.self, forKey: .voiceEnrollmentEnabled) ?? false
         outputLanguageTag = try values.decodeIfPresent(String.self, forKey: .outputLanguageTag) ?? "auto"
-        followUpSensitivity = try values.decodeIfPresent(FollowUpSensitivity.self, forKey: .followUpSensitivity) ?? .balanced
+        followUpDetailLevel = try values.decodeIfPresent(FollowUpDetailLevel.self, forKey: .followUpDetailLevel)
+            ?? .standard
+        followUpDisplay = try values.decodeIfPresent(FollowUpDisplayPreferences.self, forKey: .followUpDisplay)
+            ?? FollowUpDisplayPreferences()
+        followUpDisplay.clamp()
         structuredRetention = try values.decodeIfPresent(StructuredRetention.self, forKey: .structuredRetention) ?? .forever
         mediaRetentionHours = try values.decodeIfPresent(Int.self, forKey: .mediaRetentionHours) ?? 24
         dailyDigestEnabled = try values.decodeIfPresent(Bool.self, forKey: .dailyDigestEnabled) ?? true
@@ -292,7 +339,8 @@ struct IrizSettings: Codable, Equatable, Sendable {
         try values.encode(meetingDetectionEnabled, forKey: .meetingDetectionEnabled)
         try values.encode(voiceEnrollmentEnabled, forKey: .voiceEnrollmentEnabled)
         try values.encode(outputLanguageTag, forKey: .outputLanguageTag)
-        try values.encode(followUpSensitivity, forKey: .followUpSensitivity)
+        try values.encode(followUpDetailLevel, forKey: .followUpDetailLevel)
+        try values.encode(followUpDisplay, forKey: .followUpDisplay)
         try values.encode(structuredRetention, forKey: .structuredRetention)
         try values.encode(mediaRetentionHours, forKey: .mediaRetentionHours)
         try values.encode(dailyDigestEnabled, forKey: .dailyDigestEnabled)

@@ -13,6 +13,7 @@ struct IrizApp: App {
             MainWindowView()
                 .environmentObject(app)
                 .environmentObject(settings)
+                .preferredColorScheme(.dark)
                 .background {
                     MainWindowResolver { window in
                         delegate.registerMainWindow(window)
@@ -45,6 +46,7 @@ final class IrizAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        NSApp.appearance = NSAppearance(named: .darkAqua)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(openMainWindowRequested(_:)),
@@ -82,6 +84,7 @@ final class IrizAppDelegate: NSObject, NSApplicationDelegate {
 
     func registerMainWindow(_ window: NSWindow) {
         mainWindow = window
+        window.appearance = NSAppearance(named: .darkAqua)
         window.isReleasedWhenClosed = false
         window.isRestorable = false
         guard !didSizeMainWindow, let screen = window.screen ?? NSScreen.main else { return }

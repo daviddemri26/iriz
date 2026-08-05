@@ -22,6 +22,7 @@ struct SettingsView: View {
     @State private var message: String?
     @State private var pendingExport: ExportFormat?
     @State private var selectedCategory: SettingsCategory = .capture
+    @State private var isConfirmingFollowUpReset = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -81,6 +82,14 @@ struct SettingsView: View {
         } message: {
             Text("The export can contain private event details and URLs. Raw screenshots, audio and API keys are never included.")
         }
+        .alert("Reset Follow Up?", isPresented: $isConfirmingFollowUpReset) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset Follow Up", role: .destructive) {
+                Task { await app.resetFollowUps() }
+            }
+        } message: {
+            Text("This clears every follow-up and subject, but keeps your Journal, media, conversations, API key, and settings.")
+        }
     }
 
     @ViewBuilder private var selectedCategoryContent: some View {
@@ -91,7 +100,7 @@ struct SettingsView: View {
             statusLegendSection
         case .intelligence:
             apiSection
-            followUpSensitivitySection
+            followUpDetailLevelSection
             languageSection
         case .journal:
             journalSection
@@ -298,22 +307,44 @@ struct SettingsView: View {
         }
     }
 
-    private var followUpSensitivitySection: some View {
+    private var followUpDetailLevelSection: some View {
         SettingsGroup(
-            title: "Follow Up Sensitivity",
-            subtitle: "Choose how selective Iriz should be when it notices commitments and useful next actions."
+            title: "Follow Up Detail",
+            subtitle: "Choose how broadly or precisely Iriz turns the same captured context into future follow-ups."
         ) {
-            Picker("Sensitivity", selection: $settings.settings.followUpSensitivity) {
-                ForEach(FollowUpSensitivity.allCases) { level in
-                    Text(level.displayName).tag(level)
+            ViewThatFits(in: .horizontal) {
+                Picker("Detail level", selection: $settings.settings.followUpDetailLevel) {
+                    ForEach(FollowUpDetailLevel.allCases) { level in
+                        Text(level.displayName).tag(level)
+                    }
                 }
+                .pickerStyle(.segmented)
+
+                Picker("Detail level", selection: $settings.settings.followUpDetailLevel) {
+                    ForEach(FollowUpDetailLevel.allCases) { level in
+                        Text(level.displayName).tag(level)
+                    }
+                }
+                .pickerStyle(.menu)
             }
-            .pickerStyle(.segmented)
-            Text(settings.settings.followUpSensitivity.explanation)
+            Text(settings.settings.followUpDetailLevel.description)
                 .font(.callout)
-            Text("The setting guides future AI extraction and immediately filters the current Follow Up view. Hidden items are kept locally and reappear if you choose a more detailed level.")
+            Text("Iriz keeps observing the same context. This setting applies only when a new tile is created; existing tiles keep the scope and wording of their original level.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Divider()
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Start with a clean Follow Up workspace")
+                    Text("Clears follow-ups and subjects only. Journal history is preserved.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Reset Follow Up…", role: .destructive) {
+                    isConfirmingFollowUpReset = true
+                }
+            }
         }
     }
 

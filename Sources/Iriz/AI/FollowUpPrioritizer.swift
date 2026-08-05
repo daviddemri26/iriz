@@ -15,21 +15,105 @@ struct FollowUpSection: Identifiable, Sendable {
     let commitments: [RankedCommitment]
 }
 
+struct FollowUpPriorityCorrection: Sendable {
+    let commitment: Commitment
+    let subject: FollowUpSubject
+}
+
 enum FollowUpPrioritizer {
     static let compactListLimit = 8
     static let highlightedLimit = 5
 
+    static func effectiveLifecycle(
+        for commitment: Commitment,
+        now: Date = Date()
+    ) -> FollowUpLifecycle {
+        if commitment.lifecycle == .snoozed,
+           let snoozedUntil = commitment.snoozedUntil,
+           snoozedUntil <= now {
+            return .active
+        }
+        return commitment.lifecycle
+    }
+
+    /// Returns the tile display order. Priority is intentionally only a filter
+    /// and visual signal; it never changes chronology.
+    static func displayOrdered(
+        commitments: [Commitment],
+        lifecycle: FollowUpLifecycle? = nil,
+        minimumPriority: Int = 0,
+        now: Date = Date()
+    ) -> [Commitment] {
+        let threshold = clampedScore(minimumPriority)
+        return commitments
+            .filter { commitment in
+                commitment.priorityScore >= threshold
+                    && (lifecycle.map { effectiveLifecycle(for: commitment, now: now) == $0 } ?? true)
+            }
+            .sorted(by: chronologicalOrder)
+    }
+
+    static func personalizedScore(
+        aiScore: Int,
+        subject: FollowUpSubject?
+    ) -> Int {
+        let adjusted = Double(clampedScore(aiScore)) + (subject?.priorityBias ?? 0)
+        return clampedScore(Int(adjusted.rounded()))
+    }
+
+    static func applyingAIPriority(
+        _ aiScore: Int,
+        reason: String,
+        to commitment: Commitment,
+        subject: FollowUpSubject?
+    ) -> Commitment {
+        var updated = commitment
+        guard !commitment.manuallyEditedFields.contains(.priority),
+              commitment.userPriorityScore == nil else {
+            return updated
+        }
+        updated.aiPriorityScore = clampedScore(aiScore)
+        updated.displayPriorityScore = personalizedScore(aiScore: aiScore, subject: subject)
+        updated.priorityReason = reason
+        return updated
+    }
+
+    static func applyingUserPriority(
+        _ userScore: Int,
+        aiScore: Int,
+        to commitment: Commitment,
+        subject: FollowUpSubject,
+        now: Date = Date()
+    ) -> FollowUpPriorityCorrection {
+        let correctedScore = clampedScore(userScore)
+        let normalizedAIScore = clampedScore(aiScore)
+        var updatedCommitment = commitment
+        var updatedSubject = subject
+        updatedSubject.learn(aiScore: normalizedAIScore, userScore: correctedScore)
+        updatedSubject.updatedAt = now
+        updatedCommitment.aiPriorityScore = normalizedAIScore
+        updatedCommitment.displayPriorityScore = personalizedScore(aiScore: normalizedAIScore, subject: subject)
+        updatedCommitment.userPriorityScore = correctedScore
+        updatedCommitment.manuallyEditedFields.insert(.priority)
+        updatedCommitment.updatedAt = now
+        updatedCommitment.history.append(FollowUpHistoryEntry(
+            kind: .prioritized,
+            actor: .user,
+            summary: "Priority changed to \(correctedScore)",
+            occurredAt: now
+        ))
+        return FollowUpPriorityCorrection(commitment: updatedCommitment, subject: updatedSubject)
+    }
+
     static func sections(
         commitments: [Commitment],
         events: [ActivityEvent],
-        sensitivity: FollowUpSensitivity = .balanced,
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [FollowUpSection] {
         let ranked = ranked(
             commitments: commitments,
             events: events,
-            sensitivity: sensitivity,
             now: now,
             calendar: calendar
         )
@@ -42,14 +126,15 @@ enum FollowUpPrioritizer {
     static func ranked(
         commitments: [Commitment],
         events: [ActivityEvent],
-        sensitivity: FollowUpSensitivity = .balanced,
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [RankedCommitment] {
-        let eventsByID = Dictionary(uniqueKeysWithValues: events.map { ($0.id, $0) })
-        let visibleCommitments = commitments.filter { commitment in
-            isVisible(commitment, event: eventsByID[commitment.eventID], sensitivity: sensitivity)
+        let eventsByID = Dictionary(events.map { ($0.id, $0) }) { lhs, rhs in
+            lhs.updatedAt >= rhs.updatedAt ? lhs : rhs
         }
+        // Granularity controls how future follow-ups are created. It must never
+        // hide or retroactively reshape items that already exist.
+        let visibleCommitments = commitments.filter { $0.state != .dismissed }
         let evaluated = visibleCommitments.map { commitment -> (Commitment, CommitmentState, Double, String) in
             let state = effectiveState(for: commitment, now: now)
             return (
@@ -61,8 +146,8 @@ enum FollowUpPrioritizer {
         }
         .sorted { lhs, rhs in
             if lhs.2 != rhs.2 { return lhs.2 > rhs.2 }
-            let lhsDate = lhs.0.explicitDueAt ?? lhs.0.suggestedReviewAt ?? .distantFuture
-            let rhsDate = rhs.0.explicitDueAt ?? rhs.0.suggestedReviewAt ?? .distantFuture
+            let lhsDate = lhs.0.explicitDueAt ?? .distantFuture
+            let rhsDate = rhs.0.explicitDueAt ?? .distantFuture
             if lhsDate != rhsDate { return lhsDate < rhsDate }
             return lhs.0.updatedAt > rhs.0.updatedAt
         }
@@ -82,24 +167,19 @@ enum FollowUpPrioritizer {
         }
     }
 
-    static func isVisible(
-        _ commitment: Commitment,
-        event: ActivityEvent?,
-        sensitivity: FollowUpSensitivity
-    ) -> Bool {
-        if commitment.state == .dismissed { return false }
-        if commitment.isPriority { return true }
-        if commitment.state == .completed || commitment.state == .completionSuggested { return true }
-        return sensitivity.accepts(
-            confidence: commitment.confidence,
-            importance: event?.importance ?? .normal,
-            hasExplicitDueDate: commitment.explicitDueAt != nil
-        )
+    private static func chronologicalOrder(_ lhs: Commitment, _ rhs: Commitment) -> Bool {
+        if lhs.surfacedAt != rhs.surfacedAt { return lhs.surfacedAt > rhs.surfacedAt }
+        if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private static func clampedScore(_ score: Int) -> Int {
+        min(max(score, 0), 10)
     }
 
     private static func effectiveState(for commitment: Commitment, now: Date) -> CommitmentState {
         guard commitment.state == .later || commitment.state == .waiting,
-              let reviewAt = commitment.explicitDueAt ?? commitment.suggestedReviewAt,
+              let reviewAt = commitment.explicitDueAt,
               reviewAt <= now else {
             return commitment.state
         }
@@ -120,7 +200,7 @@ enum FollowUpPrioritizer {
         case .maybe: 8
         case .completed, .dismissed: 0
         }
-        let reviewAt = commitment.explicitDueAt ?? commitment.suggestedReviewAt
+        let reviewAt = commitment.explicitDueAt
         let timingScore: Double
         if let reviewAt {
             let interval = reviewAt.timeIntervalSince(now)
@@ -157,11 +237,6 @@ enum FollowUpPrioritizer {
             if calendar.isDateInToday(due) { return "Due today" }
             if due.timeIntervalSince(now) < 7 * 86_400 { return "Due soon" }
             return "Explicit due date"
-        }
-        if let review = commitment.suggestedReviewAt {
-            if review <= now { return "Ready to review" }
-            if review.timeIntervalSince(now) < 7 * 86_400 { return "Review soon" }
-            return "Review scheduled"
         }
         return switch effectiveState {
         case .completionSuggested: "Completion evidence found"

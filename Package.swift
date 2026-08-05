@@ -22,6 +22,7 @@ let package = Package(
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("CoreMedia"),
                 .linkedFramework("CryptoKit"),
+                .linkedFramework("EventKit"),
                 .linkedFramework("ImageIO"),
                 .linkedFramework("NaturalLanguage"),
                 .linkedFramework("ScreenCaptureKit"),

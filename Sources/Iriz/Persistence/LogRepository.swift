@@ -12,6 +12,15 @@ protocol LogRepository: Sendable {
     func deleteEvent(id: UUID) async throws
     func saveCommitment(_ commitment: Commitment) async throws
     func commitments(includingClosed: Bool) async throws -> [Commitment]
+    func replaceCommitments(with mergedCommitment: Commitment, deletingSourceIDs sourceIDs: [UUID]) async throws
+    func saveFollowUpSubject(_ subject: FollowUpSubject) async throws
+    func followUpSubject(id: String) async throws -> FollowUpSubject?
+    func followUpSubjects() async throws -> [FollowUpSubject]
+    func deleteFollowUpSubject(id: String) async throws
+    func saveFollowUpType(_ type: FollowUpType) async throws
+    func followUpTypes() async throws -> [FollowUpType]
+    func deleteFollowUpType(id: String) async throws
+    func resetFollowUps() async throws
     func saveAssistantConversation(_ conversation: AssistantConversation) async throws
     func assistantConversations(limit: Int) async throws -> [AssistantConversation]
     func deleteAssistantConversation(id: UUID) async throws

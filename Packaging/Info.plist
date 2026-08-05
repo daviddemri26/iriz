@@ -32,6 +32,8 @@
     <string>Iriz observes visual changes to create your private activity journal.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Iriz listens only when enabled to transcribe useful conversations and commitments.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>Iriz adds follow-ups to Reminders only when you choose Add to Reminders.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

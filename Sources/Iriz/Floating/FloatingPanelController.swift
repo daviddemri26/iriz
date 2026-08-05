@@ -114,6 +114,7 @@ final class FloatingPanelController {
             defer: false
         )
         panel.level = .floating
+        panel.appearance = NSAppearance(named: .darkAqua)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
@@ -125,7 +126,9 @@ final class FloatingPanelController {
         panel.isExcludedFromWindowsMenu = true
         let hostingView = NSHostingView(rootView: FloatingCapsuleView(model: model)
             .environmentObject(app)
-            .environmentObject(settings))
+            .environmentObject(settings)
+            .preferredColorScheme(.dark))
+        hostingView.appearance = NSAppearance(named: .darkAqua)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         panel.contentView = hostingView

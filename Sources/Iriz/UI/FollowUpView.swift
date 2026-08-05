@@ -1,466 +1,1427 @@
 import SwiftUI
 
-private enum FollowUpTab: String, CaseIterable, Identifiable {
-    case all
-    case needsAttention
-    case completionSuggested
-    case waiting
-    case later
-    case maybe
-    case resolved
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .all: "All"
-        case .needsAttention: "Needs attention"
-        case .completionSuggested: "Suggested done"
-        case .waiting: "Waiting"
-        case .later: "Later"
-        case .maybe: "Maybe"
-        case .resolved: "Resolved"
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .all: "tray.full"
-        case .needsAttention: "exclamationmark.circle"
-        case .completionSuggested: "checkmark.circle"
-        case .waiting: "hourglass"
-        case .later: "clock"
-        case .maybe: "questionmark.circle"
-        case .resolved: "checkmark.seal"
-        }
-    }
-
-    func includes(_ state: CommitmentState) -> Bool {
-        switch self {
-        case .all: state != .completed && state != .dismissed
-        case .needsAttention: state == .needsAttention
-        case .completionSuggested: state == .completionSuggested
-        case .waiting: state == .waiting
-        case .later: state == .later
-        case .maybe: state == .maybe
-        case .resolved: state == .completed
-        }
-    }
-}
-
 struct FollowUpView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var settings: SettingsStore
-    @State private var selectedTab: FollowUpTab = .all
-    @State private var selectedContextID: String?
+    @State private var search = ""
+    @State private var completedSearch = ""
+    @State private var completedActor: FollowUpCompletionActor?
+    @State private var completedPeriod: CompletedArchivePeriod = .all
+    @State private var selectedFollowUp: Commitment?
+    @State private var isCreating = false
+    @State private var snoozeTarget: Commitment?
+    @State private var isManagingSubjects = false
+    @State private var isManagingTypes = false
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { timeline in
-            let sourceCommitments = app.commitments + app.resolvedCommitments
-            let ranked = FollowUpPrioritizer.ranked(
-                commitments: sourceCommitments,
-                events: app.events,
-                sensitivity: settings.settings.followUpSensitivity,
-                now: timeline.date
-            )
-            let contextGroups = FollowUpContextGrouper.groups(commitments: ranked, events: app.events)
-            let selectedContext = contextGroups.first { $0.id == selectedContextID }
-            let contextRanked = selectedContext.map { group in
-                ranked.filter { group.commitmentIDs.contains($0.id) }
-            } ?? ranked
-            let visibleOpen = ranked.filter { $0.effectiveState != .completed && $0.effectiveState != .dismissed }
-            let matchingTab = contextRanked.filter { selectedTab.includes($0.effectiveState) }
-            let displayed = selectedTab == .resolved
-                ? matchingTab.sorted { $0.commitment.updatedAt > $1.commitment.updatedAt }
-                : matchingTab
-            let hiddenCount = max(0, app.commitments.count - visibleOpen.count)
-
-            VStack(spacing: 0) {
-                header(visibleCount: visibleOpen.count, hiddenCount: hiddenCount)
-                Divider()
-                contextBar(groups: contextGroups)
-                Divider()
-                tabBar(ranked: contextRanked)
-                Divider()
-                if displayed.isEmpty {
-                    emptyState(contextLabel: selectedContext?.label)
-                } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            if selectedTab == .all {
-                                followUpSummary(visibleCount: visibleOpen.count, hiddenCount: hiddenCount)
-                            }
-                            if selectedTab == .all, selectedContextID == nil {
-                                let priorityItems = displayed.filter(\.commitment.isPriority)
-                                if !priorityItems.isEmpty {
-                                    prioritySectionHeader(count: priorityItems.count)
-                                    ForEach(priorityItems) { rankedCommitment in
-                                        CommitmentCard(
-                                            ranked: rankedCommitment,
-                                            showsPriorityBadge: true
-                                        )
-                                    }
-                                }
-                                ForEach(contextGroups) { group in
-                                    let groupedItems = displayed.filter {
-                                        group.commitmentIDs.contains($0.id) && !$0.commitment.isPriority
-                                    }
-                                    if !groupedItems.isEmpty {
-                                        contextSectionHeader(group: group, visibleCount: groupedItems.count)
-                                        ForEach(groupedItems) { rankedCommitment in
-                                            CommitmentCard(
-                                                ranked: rankedCommitment,
-                                                showsPriorityBadge: visibleOpen.count > FollowUpPrioritizer.compactListLimit
-                                            )
-                                        }
-                                    }
-                                }
-                            } else {
-                                ForEach(displayed) { rankedCommitment in
-                                    CommitmentCard(
-                                        ranked: rankedCommitment,
-                                        showsPriorityBadge: visibleOpen.count > FollowUpPrioritizer.compactListLimit
-                                    )
-                                }
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    header
+                    Divider()
+                    filterBar
+                    Divider()
+                    if settings.settings.followUpDisplay.completedRailMode == .expanded {
+                        completedArchive(now: timeline.date)
+                    } else {
+                        HStack(spacing: 0) {
+                            activeCanvas(now: timeline.date)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            if shouldShowCompletedRail {
+                                Divider()
+                                completedRail(now: timeline.date)
+                                    .frame(width: 232)
                             }
                         }
-                        .padding(22)
                     }
                 }
+                .frame(width: geometry.size.width, height: geometry.size.height)
             }
         }
-    }
-
-    private func contextBar(groups: [FollowUpContextGroup]) -> some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 7) {
-                Text("Context")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.trailing, 2)
-                contextButton(id: nil, title: "All", count: groups.reduce(0) { $0 + $1.count })
-                ForEach(groups) { group in
-                    contextButton(id: group.id, title: group.label, count: group.count)
+        .sheet(item: $selectedFollowUp) { commitment in
+            FollowUpDetailView(commitment: commitment) {
+                selectedFollowUp = nil
+            }
+            .environmentObject(app)
+            .environmentObject(settings)
+        }
+        .sheet(isPresented: $isCreating) {
+            NewFollowUpSheet { createdID in
+                isCreating = false
+                if let createdID,
+                   let created = app.commitments.first(where: { $0.id == createdID }) {
+                    selectedFollowUp = created
                 }
             }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 9)
+            .environmentObject(app)
         }
-        .scrollIndicators(.hidden)
+        .sheet(item: $snoozeTarget) { commitment in
+            CustomSnoozeSheet(commitment: commitment) { snoozeTarget = nil }
+                .environmentObject(app)
+        }
+        .sheet(isPresented: $isManagingSubjects) {
+            FollowUpSubjectManager()
+                .environmentObject(app)
+        }
+        .sheet(isPresented: $isManagingTypes) {
+            FollowUpTypeManager()
+                .environmentObject(app)
+        }
     }
 
-    private func contextButton(id: String?, title: String, count: Int) -> some View {
-        let selected = selectedContextID == id
-        return Button {
-            withAnimation(.snappy(duration: 0.18)) { selectedContextID = id }
-        } label: {
-            HStack(spacing: 5) {
-                Text(title)
-                Text("\(count)")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(selected ? Color.white.opacity(0.82) : Color.secondary)
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(selected ? Color.white : Color.primary)
-            .padding(.horizontal, 10)
-            .frame(minHeight: 28)
-            .background(selected ? IrizTheme.violet : Color.primary.opacity(0.045), in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(title) context")
-        .accessibilityValue("\(count) items")
+    private var preferences: FollowUpDisplayPreferences {
+        settings.settings.followUpDisplay
     }
 
-    private func header(visibleCount: Int, hiddenCount: Int) -> some View {
-        HStack {
+    private var header: some View {
+        HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("Follow Up").font(.largeTitle.weight(.bold))
-                Text("Promises and useful loose ends, reprioritized locally as time and evidence change.")
+                Text("Follow Up")
+                    .font(.largeTitle.weight(.bold))
+                Text("A clear, personal view of what still matters.")
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(settings.settings.followUpSensitivity.displayName)
-                    .font(.callout.weight(.semibold))
-                Text(hiddenCount > 0 ? "\(visibleCount) visible · \(hiddenCount) filtered" : "\(visibleCount) open")
+            if let message = app.followUpOperationMessage {
+                Text(message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: 260, alignment: .trailing)
             }
+            Button {
+                isCreating = true
+            } label: {
+                Label("New Follow Up", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(IrizTheme.violet)
+
+            Button {
+                withAnimation(.snappy(duration: 0.2)) {
+                    settings.settings.followUpDisplay.completedRailMode = preferences.completedRailMode == .collapsed
+                        ? .rail
+                        : .collapsed
+                }
+            } label: {
+                Label("Completed \(app.resolvedCommitments.count)", systemImage: "checkmark.seal")
+            }
+            .buttonStyle(.bordered)
         }
         .padding(22)
     }
 
-    private func tabBar(ranked: [RankedCommitment]) -> some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 7) {
-                ForEach(FollowUpTab.allCases) { tab in
-                    let count = ranked.filter { tab.includes($0.effectiveState) }.count
-                    Button {
-                        withAnimation(.snappy(duration: 0.18)) { selectedTab = tab }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: tab.symbol)
-                            Text(tab.title)
-                            Text("\(count)")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(selectedTab == tab ? Color.white.opacity(0.82) : Color.secondary)
-                        }
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(selectedTab == tab ? Color.white : Color.primary)
-                        .padding(.horizontal, 11)
-                        .frame(minHeight: 32)
-                        .background(selectedTab == tab ? IrizTheme.violet : Color.primary.opacity(0.055), in: Capsule())
+    private var filterBar: some View {
+        VStack(spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    viewModePicker(width: 270)
+                    typeMenu
+                    subjectMenu
+                    Spacer(minLength: 8)
+                    searchField
+                }
+
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(spacing: 8) {
+                        viewModePicker(width: 240)
+                        Spacer(minLength: 4)
+                        typeMenu
+                        subjectMenu
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityValue("\(count) items")
+                    searchField
+                        .frame(maxWidth: .infinity)
                 }
             }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 11)
-        }
-        .scrollIndicators(.hidden)
-    }
 
-    private func emptyState(contextLabel: String?) -> some View {
-        ContentUnavailableView(
-            contextLabel.map { "No \(selectedTab.title.lowercased()) items in \($0)" }
-                ?? (selectedTab == .all ? "Nothing needs your attention" : "No \(selectedTab.title.lowercased()) items"),
-            systemImage: selectedTab.symbol,
-            description: Text(selectedTab == .resolved
-                              ? "Automatically and manually completed follow-ups appear here."
-                              : "Iriz will update this category when new evidence is found.")
-        )
-    }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    priorityFilterControls
+                    Spacer()
+                    chronologyHint
+                }
 
-    private func contextSectionHeader(group: FollowUpContextGroup, visibleCount: Int) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: contextSymbol(for: group.label))
-                .foregroundStyle(IrizTheme.violet)
-            Text(group.label)
-                .font(.headline)
-            Text("\(visibleCount)")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button("View") {
-                withAnimation(.snappy(duration: 0.18)) { selectedContextID = group.id }
+                VStack(alignment: .leading, spacing: 6) {
+                    priorityFilterControls
+                    chronologyHint
+                }
             }
-            .buttonStyle(.plain)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(IrizTheme.violet)
         }
-        .padding(.top, 8)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 12)
     }
 
-    private func prioritySectionHeader(count: Int) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: "star.fill")
-                .foregroundStyle(IrizTheme.violet)
-            Text("Priority")
-                .font(.headline)
-            Text("\(count)")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text("Marked by you")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+    private func viewModePicker(width: CGFloat) -> some View {
+        Picker("View", selection: $settings.settings.followUpDisplay.viewMode) {
+            ForEach(FollowUpViewMode.allCases) { mode in
+                Text(mode.displayName).tag(mode)
+            }
         }
-        .padding(.top, 8)
+        .pickerStyle(.segmented)
+        .frame(width: width)
     }
 
-    private func contextSymbol(for label: String) -> String {
-        switch label {
-        case "Work": "briefcase.fill"
-        case "Personal": "person.fill"
-        case "Family": "person.2.fill"
-        case "Travel": "airplane"
-        case "Other": "square.grid.2x2"
-        default: "folder.fill"
-        }
+    private var searchField: some View {
+        TextField("Search follow-ups", text: $search)
+            .textFieldStyle(.roundedBorder)
+            .frame(minWidth: 180, idealWidth: 240, maxWidth: 300)
     }
 
-    private func followUpSummary(visibleCount: Int, hiddenCount: Int) -> some View {
+    private var priorityFilterControls: some View {
         HStack(spacing: 10) {
-            Image(systemName: visibleCount > FollowUpPrioritizer.compactListLimit ? "arrow.up.arrow.down.circle.fill" : "checklist.checked")
+            Image(systemName: "dial.medium")
                 .foregroundStyle(IrizTheme.violet)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(visibleCount > FollowUpPrioritizer.compactListLimit ? "Priority view is active" : "All matching open items are visible")
-                    .font(.callout.weight(.semibold))
-                Text(hiddenCount > 0
-                     ? "\(hiddenCount) lower-sensitivity item\(hiddenCount == 1 ? " is" : "s are") hidden, not deleted. Change sensitivity in Settings to show them."
-                     : "Items move between tabs automatically as dates and completion evidence change.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Text("Priority ≥ \(preferences.minimumPriority)")
+                .font(.caption.weight(.semibold))
+                .frame(width: 82, alignment: .leading)
+            Slider(
+                value: Binding(
+                    get: { Double(preferences.minimumPriority) },
+                    set: { settings.settings.followUpDisplay.minimumPriority = Int($0.rounded()) }
+                ),
+                in: 0...10,
+                step: 1
+            )
+            .frame(minWidth: 160, idealWidth: 280, maxWidth: 340)
+            .accessibilityLabel("Minimum displayed priority")
+            Text(minimumPriorityLabel)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 62, alignment: .leading)
+        }
+    }
+
+    private var chronologyHint: some View {
+        Text("Strictly newest first · priority only filters and emphasizes")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private var minimumPriorityLabel: String {
+        switch preferences.minimumPriority {
+        case 8...10: "High only"
+        case 5...7: "Medium+"
+        case 1...4: "Low+"
+        default: "All"
+        }
+    }
+
+    private var typeMenu: some View {
+        Menu {
+            Button("All types") { settings.settings.followUpDisplay.selectedTypeIDs = [] }
+            Divider()
+            ForEach(prioritizedTypes) { type in
+                Button {
+                    if preferences.selectedTypeIDs.contains(type.id) {
+                        settings.settings.followUpDisplay.selectedTypeIDs.remove(type.id)
+                    } else {
+                        settings.settings.followUpDisplay.selectedTypeIDs.insert(type.id)
+                    }
+                } label: {
+                    if preferences.selectedTypeIDs.contains(type.id) {
+                        Label(type.name, systemImage: "checkmark.circle.fill")
+                    } else {
+                        Label(type.name, systemImage: type.systemImage)
+                    }
+                }
+            }
+            Divider()
+            Button("Manage types…") { isManagingTypes = true }
+        } label: {
+            Label(
+                preferences.selectedTypeIDs.isEmpty ? "All types" : "\(preferences.selectedTypeIDs.count) types",
+                systemImage: "square.stack.3d.up"
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var prioritizedTypes: [FollowUpType] {
+        let subjectsByID = Dictionary(uniqueKeysWithValues: app.followUpSubjects.map { ($0.id, $0) })
+        let counts = Dictionary(grouping: app.commitments.compactMap { commitment -> String? in
+            guard let subjectID = commitment.subjectID,
+                  let subject = subjectsByID[subjectID] else {
+                return FollowUpType.defaultID(for: commitment.area)
+            }
+            return subject.typeID ?? FollowUpType.defaultID(for: subject.area)
+        }, by: { $0 }).mapValues(\.count)
+        return app.followUpTypes.sorted { lhs, rhs in
+            let lhsCount = counts[lhs.id] ?? 0
+            let rhsCount = counts[rhs.id] ?? 0
+            if lhsCount != rhsCount { return lhsCount > rhsCount }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    private var subjectMenu: some View {
+        Menu {
+            Button("All subjects") {
+                settings.settings.followUpDisplay.selectedSubjectIDs = []
+            }
+            Divider()
+            ForEach(prioritizedSubjects) { subject in
+                Button {
+                    if preferences.selectedSubjectIDs.contains(subject.id) {
+                        settings.settings.followUpDisplay.selectedSubjectIDs.remove(subject.id)
+                    } else {
+                        settings.settings.followUpDisplay.selectedSubjectIDs.insert(subject.id)
+                    }
+                } label: {
+                    Label {
+                        Text(subject.name)
+                    } icon: {
+                        Image(systemName: preferences.selectedSubjectIDs.contains(subject.id) ? "checkmark.circle.fill" : "circle.fill")
+                    }
+                }
+            }
+            Divider()
+            Button("Manage subjects…") { isManagingSubjects = true }
+        } label: {
+            Label(
+                preferences.selectedSubjectIDs.isEmpty ? "All subjects" : "\(preferences.selectedSubjectIDs.count) subjects",
+                systemImage: "tag"
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var prioritizedSubjects: [FollowUpSubject] {
+        let openCounts = Dictionary(grouping: app.commitments, by: \.subjectID)
+            .mapValues(\.count)
+        return app.followUpSubjects
+            .filter { !FollowUpContextGrouper.isGenericSubjectName($0.name) }
+            .sorted { lhs, rhs in
+                let lhsCount = openCounts[lhs.id] ?? 0
+                let rhsCount = openCounts[rhs.id] ?? 0
+                if lhsCount != rhsCount { return lhsCount > rhsCount }
+                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    @ViewBuilder
+    private func activeCanvas(now: Date) -> some View {
+        let values = filteredOpenFollowUps(now: now)
+        if values.isEmpty {
+            ContentUnavailableView(
+                emptyTitle,
+                systemImage: preferences.viewMode == .active ? "square.grid.2x2" : (preferences.viewMode == .snoozed ? "moon.zzz" : "eye.slash"),
+                description: Text("Adjust the filters or create a follow-up manually.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVGrid(
+                    columns: Array(
+                        repeating: GridItem(.flexible(minimum: 150), spacing: 12, alignment: .top),
+                        count: 3
+                    ),
+                    alignment: .leading,
+                    spacing: 12
+                ) {
+                    ForEach(values) { commitment in
+                        FollowUpTile(
+                            commitment: commitment,
+                            subject: subject(for: commitment),
+                            type: type(for: commitment),
+                            onOpen: { selectedFollowUp = commitment },
+                            onCustomSnooze: { snoozeTarget = commitment },
+                            onMerge: { sourceID in
+                                Task { await app.mergeFollowUps(ids: [sourceID, commitment.id], targetID: commitment.id) }
+                            }
+                        )
+                    }
+                }
+                .padding(18)
             }
         }
-        .padding(12)
-        .background(IrizTheme.violet.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var emptyTitle: String {
+        switch preferences.viewMode {
+        case .active: "No active follow-ups match"
+        case .snoozed: "Nothing is snoozed"
+        case .dismissed: "Nothing is dismissed"
+        }
+    }
+
+    private func filteredOpenFollowUps(now: Date) -> [Commitment] {
+        let lifecycle: FollowUpLifecycle = switch preferences.viewMode {
+        case .active: .active
+        case .snoozed: .snoozed
+        case .dismissed: .dismissed
+        }
+        return FollowUpPrioritizer.displayOrdered(
+            commitments: app.commitments.filter(matchesGlobalFilters),
+            lifecycle: lifecycle,
+            minimumPriority: preferences.minimumPriority,
+            now: now
+        )
+        .filter(matchesSearch)
+    }
+
+    private func matchesGlobalFilters(_ commitment: Commitment) -> Bool {
+        (preferences.selectedTypeIDs.isEmpty || preferences.selectedTypeIDs.contains(type(for: commitment).id)) &&
+        (preferences.selectedSubjectIDs.isEmpty || commitment.subjectID.map(preferences.selectedSubjectIDs.contains) == true)
+    }
+
+    private func matchesSearch(_ commitment: Commitment) -> Bool {
+        search.isEmpty || [commitment.action, commitment.summary, commitment.details, commitment.contextLabel ?? ""]
+            .joined(separator: " ")
+            .localizedCaseInsensitiveContains(search)
+    }
+
+    private func subject(for commitment: Commitment) -> FollowUpSubject {
+        commitment.subjectID.flatMap { id in app.followUpSubjects.first(where: { $0.id == id }) }
+            ?? FollowUpSubject(name: commitment.contextLabel ?? "Uncategorized", area: commitment.area)
+    }
+
+    private func type(for commitment: Commitment) -> FollowUpType {
+        let subject = subject(for: commitment)
+        let identifier = subject.typeID ?? FollowUpType.defaultID(for: subject.area)
+        return app.followUpTypes.first(where: { $0.id == identifier })
+            ?? FollowUpType.defaults.first(where: { $0.id == FollowUpType.defaultID(for: commitment.area) })!
+    }
+
+    private var shouldShowCompletedRail: Bool {
+        preferences.completedRailMode == .rail
+    }
+
+    private func recentCompleted(now: Date) -> [Commitment] {
+        let cutoff = now.addingTimeInterval(-preferences.completedRailDuration.interval)
+        return app.resolvedCommitments
+            .filter(matchesGlobalFilters)
+            .filter { ($0.completedAt ?? $0.updatedAt) >= cutoff }
+            .filter { $0.priorityScore >= preferences.minimumPriority }
+            .sorted { ($0.completedAt ?? $0.updatedAt) > ($1.completedAt ?? $1.updatedAt) }
+    }
+
+    private func completedRail(now: Date) -> some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 8) {
+                HStack(spacing: 7) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(IrizTheme.mint)
+                    Text("Completed")
+                        .font(.headline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                    Spacer(minLength: 4)
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            settings.settings.followUpDisplay.completedRailMode = .expanded
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open completed history")
+                }
+                HStack(spacing: 6) {
+                    Text("Showing")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 2)
+                    Menu(preferences.completedRailDuration.displayName) {
+                        ForEach(CompletedRailDuration.allCases) { duration in
+                            Button(duration.displayName) {
+                                settings.settings.followUpDisplay.completedRailDuration = duration
+                            }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+            }
+            .padding(14)
+            Divider()
+
+            let values = recentCompleted(now: now)
+            if values.isEmpty {
+                ContentUnavailableView(
+                    "No recent completions",
+                    systemImage: "checkmark.seal",
+                    description: Text("Completed follow-ups stay here for \(preferences.completedRailDuration.displayName).")
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(values) { commitment in
+                            CompletedFollowUpCard(
+                                commitment: commitment,
+                                subject: subject(for: commitment),
+                                compact: true,
+                                onOpen: { selectedFollowUp = commitment }
+                            )
+                        }
+                    }
+                    .padding(12)
+                }
+            }
+        }
+        .background(Color.primary.opacity(0.018))
+    }
+
+    private func completedArchive(now: Date) -> some View {
+        let values = app.resolvedCommitments
+            .filter(matchesGlobalFilters)
+            .filter { $0.priorityScore >= preferences.minimumPriority }
+            .filter { completedPeriod.includes($0.completedAt ?? $0.updatedAt, relativeTo: now) }
+            .filter { completedActor == nil || $0.completionActor == completedActor }
+            .filter {
+                completedSearch.isEmpty || [
+                    $0.action, $0.summary, $0.details, $0.contextLabel ?? "", $0.completionEvidence?.summary ?? ""
+                ].joined(separator: " ").localizedCaseInsensitiveContains(completedSearch)
+            }
+            .sorted { ($0.completedAt ?? $0.updatedAt) > ($1.completedAt ?? $1.updatedAt) }
+
+        return VStack(spacing: 0) {
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            settings.settings.followUpDisplay.completedRailMode = .rail
+                        }
+                    } label: {
+                        Label("Back to active", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.bordered)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Completed History")
+                            .font(.title2.weight(.bold))
+                        Text("\(values.count) retained completion\(values.count == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        archiveFilterLabel
+                        Spacer(minLength: 8)
+                        completedPeriodMenu
+                        completedActorPicker
+                        completedSearchField
+                    }
+
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack(spacing: 12) {
+                            archiveFilterLabel
+                            Spacer(minLength: 8)
+                            completedPeriodMenu
+                            completedActorPicker
+                        }
+                        completedSearchField
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+            .padding(18)
+            Divider()
+
+            if values.isEmpty {
+                ContentUnavailableView(
+                    "No completed follow-ups match",
+                    systemImage: "checkmark.seal",
+                    description: Text("This view includes every completion still available under structured retention.")
+                )
+            } else {
+                ScrollView {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 250, maximum: 340), spacing: 14)],
+                        spacing: 14
+                    ) {
+                        ForEach(values) { commitment in
+                            CompletedFollowUpCard(
+                                commitment: commitment,
+                                subject: subject(for: commitment),
+                                compact: false,
+                                onOpen: { selectedFollowUp = commitment }
+                            )
+                        }
+                    }
+                    .padding(22)
+                }
+            }
+        }
+    }
+
+    private var archiveFilterLabel: some View {
+        Label("Archive filters", systemImage: "line.3.horizontal.decrease.circle")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+    }
+
+    private var completedPeriodMenu: some View {
+        Picker("Period", selection: $completedPeriod) {
+            ForEach(CompletedArchivePeriod.allCases) { period in
+                Text(period.displayName).tag(period)
+            }
+        }
+        .pickerStyle(.menu)
+        .fixedSize()
+        .accessibilityLabel("Completion period")
+    }
+
+    private var completedActorPicker: some View {
+        Picker("Completed by", selection: $completedActor) {
+            Text("Everyone").tag(FollowUpCompletionActor?.none)
+            Text("You").tag(FollowUpCompletionActor?.some(.user))
+            Text("Iriz").tag(FollowUpCompletionActor?.some(.iriz))
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 210)
+        .accessibilityLabel("Completed by")
+    }
+
+    private var completedSearchField: some View {
+        TextField("Search completed", text: $completedSearch)
+            .textFieldStyle(.roundedBorder)
+            .frame(minWidth: 180, idealWidth: 250, maxWidth: 300)
     }
 }
 
-private struct CommitmentCard: View {
-    @EnvironmentObject private var app: AppState
-    let ranked: RankedCommitment
-    let showsPriorityBadge: Bool
+private enum CompletedArchivePeriod: String, CaseIterable, Identifiable {
+    case all
+    case oneDay
+    case sevenDays
+    case thirtyDays
 
-    private var commitment: Commitment { ranked.commitment }
-    private var sourceEvent: ActivityEvent? {
-        let evidenceID = commitment.linkedEventIDs.last ?? commitment.eventID
-        return app.events.first(where: { $0.id == evidenceID })
-    }
+    var id: String { rawValue }
 
-    var body: some View {
-        SoftCard {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: stateSymbol)
-                        .foregroundStyle(stateTint)
-                        .frame(width: 20, height: 20)
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .firstTextBaseline, spacing: 7) {
-                            Text(commitment.action)
-                                .font(.headline)
-                                .fixedSize(horizontal: false, vertical: true)
-                            if commitment.isPriority || (ranked.isHighlighted && showsPriorityBadge) {
-                                priorityBadge
-                            }
-                        }
-                        if !commitment.rationale.isEmpty {
-                            Text(commitment.rationale)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        HStack(spacing: 12) {
-                            if let date = commitment.explicitDueAt ?? commitment.suggestedReviewAt {
-                                Label(date.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
-                            }
-                            Label(FollowUpContextGrouper.label(for: commitment, event: sourceEvent), systemImage: "folder")
-                        }
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        HStack(spacing: 10) {
-                            Text(ranked.reason)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(reasonTint)
-                            if let sourceEvent {
-                                Button {
-                                    app.openEvent(sourceEvent.id)
-                                } label: {
-                                    Label(sourceEvent.title, systemImage: "arrow.up.forward.square")
-                                        .lineLimit(1)
-                                }
-                                .buttonStyle(.plain)
-                                .font(.caption)
-                                .foregroundStyle(IrizTheme.violet)
-                            }
-                        }
-                    }
-                    Spacer(minLength: 8)
-                }
-                Divider()
-                quickActions
-            }
+    var displayName: String {
+        switch self {
+        case .all: "All retained time"
+        case .oneDay: "Last 24 hours"
+        case .sevenDays: "Last 7 days"
+        case .thirtyDays: "Last 30 days"
         }
     }
 
-    private var priorityBadge: some View {
-        Text(commitment.isPriority ? "PRIORITY" : "TOP")
-            .font(.system(size: 8, weight: .bold, design: .rounded))
-            .tracking(0.6)
-            .foregroundStyle(IrizTheme.violet)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(IrizTheme.violet.opacity(0.12), in: Capsule())
-            .fixedSize()
+    func includes(_ date: Date, relativeTo now: Date) -> Bool {
+        let interval: TimeInterval? = switch self {
+        case .all: nil
+        case .oneDay: 24 * 3_600
+        case .sevenDays: 7 * 24 * 3_600
+        case .thirtyDays: 30 * 24 * 3_600
+        }
+        return interval.map { date >= now.addingTimeInterval(-$0) } ?? true
+    }
+}
+
+enum FollowUpTilePriorityBand: Equatable {
+    case critical
+    case elevated
+    case standard
+}
+
+enum FollowUpTilePresentation {
+    static let tileHeight: CGFloat = 205
+    static let scheduleSlotHeight: CGFloat = 24
+
+    static func baseOpacity(for priority: Int) -> Double {
+        let score = min(max(priority, 0), 10)
+        if score >= 6 { return 1 }
+        return 0.28 + Double(score) * 0.12
     }
 
-    @ViewBuilder private var quickActions: some View {
-        if ranked.effectiveState == .completed {
-            HStack {
-                Label("Resolved", systemImage: "checkmark.seal.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(IrizTheme.mint)
-                Spacer()
-            }
-        } else {
-            HStack(spacing: 8) {
-                Button {
-                    Task { await app.setCommitmentPriority(commitment, isPriority: !commitment.isPriority) }
-                } label: {
-                    Label(commitment.isPriority ? "Prioritized" : "Priority", systemImage: commitment.isPriority ? "star.fill" : "star")
-                }
-                .buttonStyle(.bordered)
-                .tint(IrizTheme.violet)
-                .help(commitment.isPriority ? "Remove manual priority" : "Move this follow-up to the top")
+    static func priorityBand(for priority: Int) -> FollowUpTilePriorityBand {
+        switch min(max(priority, 0), 10) {
+        case 9...10: .critical
+        case 7...8: .elevated
+        default: .standard
+        }
+    }
+}
 
+private struct FollowUpTile: View {
+    @EnvironmentObject private var app: AppState
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+    let commitment: Commitment
+    let subject: FollowUpSubject
+    let type: FollowUpType
+    let onOpen: () -> Void
+    let onCustomSnooze: () -> Void
+    let onMerge: (UUID) -> Void
+    @State private var isHovered = false
+    @State private var isDropTarget = false
+    @State private var isUpdatingPriority = false
+    @FocusState private var isKeyboardFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 7) {
+                subjectChip
+                Spacer(minLength: 5)
+                if commitment.evidenceHint != nil {
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .help("Iriz found supporting evidence")
+                }
+                exportMenu
+            }
+
+            Button(action: openDetails) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(commitment.action)
+                        .font(.system(.headline, design: .rounded, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(4)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, minHeight: 68, alignment: .topLeading)
+                    scheduleBadges
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Divider()
+            HStack(alignment: .center, spacing: 7) {
+                quickActions
+                Spacer(minLength: 4)
+                priorityControl
+            }
+        }
+        .padding(13)
+        .frame(height: FollowUpTilePresentation.tileHeight, alignment: .top)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .fill(Color(red: 0.10, green: 0.10, blue: 0.12))
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                subject.color.color.opacity(0.34),
+                                subject.color.color.opacity(0.18)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(
+                    isDropTarget ? subject.color.color : subject.color.color.opacity(0.30),
+                    lineWidth: isDropTarget ? 3 : 1
+                )
+        }
+        .shadow(color: .black.opacity(0.10), radius: 8, y: 3)
+        .opacity(tileOpacity)
+        .scaleEffect(isDropTarget ? 1.015 : 1)
+        .animation(.snappy(duration: 0.16), value: isDropTarget)
+        .onHover { isHovered = $0 }
+        .focusable()
+        .focused($isKeyboardFocused)
+        .focusEffectDisabled()
+        .onKeyPress(.return) {
+            openDetails()
+            return .handled
+        }
+        .draggable(commitment.id.uuidString)
+        .dropDestination(for: String.self) { items, _ in
+            guard let rawID = items.first,
+                  let sourceID = UUID(uuidString: rawID),
+                  sourceID != commitment.id else { return false }
+            onMerge(sourceID)
+            return true
+        } isTargeted: { isDropTarget = $0 }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(commitment.action), priority \(commitment.priorityScore) out of 10, \(subject.name)")
+    }
+
+    private var tileOpacity: Double {
+        guard !reduceTransparency,
+              !differentiateWithoutColor,
+              !isHovered,
+              !isKeyboardFocused else { return 1 }
+        return FollowUpTilePresentation.baseOpacity(for: commitment.priorityScore)
+    }
+
+    private func openDetails() {
+        clearPointerEmphasis()
+        onOpen()
+    }
+
+    private func clearPointerEmphasis() {
+        isHovered = false
+        isKeyboardFocused = false
+    }
+
+    private var subjectChip: some View {
+        HStack(spacing: 5) {
+            Circle().fill(subject.color.color).frame(width: 7, height: 7)
+            Text(subject.name)
+                .lineLimit(1)
+            Image(systemName: type.systemImage)
+                .imageScale(.small)
+        }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(subject.color.color)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(subject.color.color.opacity(0.11), in: Capsule())
+    }
+
+    private var scheduleBadges: some View {
+        Group {
+            if commitment.lifecycle == .snoozed, let returnAt = commitment.snoozedUntil {
+                scheduleBadge(
+                    snoozeScheduleLabel(returnAt: returnAt),
+                    symbol: "moon.zzz",
+                    tint: IrizTheme.violet
+                )
+            } else if let deadline = commitment.explicitDueAt {
+                scheduleBadge(
+                    "Deadline \(deadline.formatted(date: .abbreviated, time: .shortened))",
+                    symbol: "calendar.badge.exclamationmark",
+                    tint: deadline < Date() ? .red : subject.color.color
+                )
+            } else {
+                Color.clear
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: FollowUpTilePresentation.scheduleSlotHeight,
+            maxHeight: FollowUpTilePresentation.scheduleSlotHeight,
+            alignment: .leading
+        )
+        .clipped()
+    }
+
+    private func scheduleBadge(_ text: String, symbol: String, tint: Color) -> some View {
+        Label(text, systemImage: symbol)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(tint.opacity(0.10), in: Capsule())
+    }
+
+    private func snoozeScheduleLabel(returnAt: Date) -> String {
+        let returnLabel = "Returns \(returnAt.formatted(date: .abbreviated, time: .shortened))"
+        guard let snoozedAt = latestSnoozedAt else { return returnLabel }
+        return "\(returnLabel) · snoozed \(snoozedAt.formatted(date: .abbreviated, time: .omitted))"
+    }
+
+    private var latestSnoozedAt: Date? {
+        commitment.history
+            .filter { $0.kind == .snoozed }
+            .map(\.occurredAt)
+            .max()
+    }
+
+    private var priorityControl: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "flag.fill")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white)
+                .help("Priority")
+                .accessibilityLabel("Priority")
+            priorityButton(symbol: "minus", delta: -1, disabled: commitment.priorityScore == 0)
+            Text("\(commitment.priorityScore)")
+                .font(.system(.callout, design: .rounded, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(minWidth: 20)
+                .contentTransition(.numericText())
+            priorityButton(symbol: "plus", delta: 1, disabled: commitment.priorityScore == 10)
+        }
+        .padding(.leading, 7)
+        .padding(.trailing, 2)
+        .padding(.vertical, 2)
+        .foregroundStyle(.white)
+        .background(priorityBackground, in: Capsule())
+        .accessibilityElement(children: .contain)
+    }
+
+    private func priorityButton(symbol: String, delta: Int, disabled: Bool) -> some View {
+        Button {
+            isKeyboardFocused = false
+            changePriority(by: delta)
+        } label: {
+            Image(systemName: symbol)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 23, height: 23)
+                .background(Color.white.opacity(0.08), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled || isUpdatingPriority)
+        .help(delta < 0 ? "Decrease priority" : "Increase priority")
+        .accessibilityLabel(delta < 0 ? "Decrease priority" : "Increase priority")
+    }
+
+    private func changePriority(by delta: Int) {
+        guard !isUpdatingPriority else { return }
+        let score = min(max(commitment.priorityScore + delta, 0), 10)
+        guard score != commitment.priorityScore else { return }
+        isUpdatingPriority = true
+        Task {
+            await app.setFollowUpPriority(commitment, score: score)
+            isUpdatingPriority = false
+        }
+    }
+
+    private var priorityBackground: LinearGradient {
+        switch FollowUpTilePresentation.priorityBand(for: commitment.priorityScore) {
+        case .critical:
+            LinearGradient(
+                colors: [Color.red.opacity(0.86), IrizTheme.coral.opacity(0.82)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .elevated:
+            LinearGradient(
+                colors: [IrizTheme.coral.opacity(0.82), Color.orange.opacity(0.76)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .standard:
+            LinearGradient(
+                colors: [Color.black.opacity(0.16), Color.black.opacity(0.16)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        }
+    }
+
+    private var quickActions: some View {
+        HStack(spacing: 7) {
+            if commitment.lifecycle == .dismissed {
                 Button {
-                    Task { await app.updateCommitment(commitment, state: .completed) }
+                    clearPointerEmphasis()
+                    Task { await app.restoreFollowUp(commitment) }
                 } label: {
-                    Label(ranked.effectiveState == .completionSuggested ? "Confirm Done" : "Done", systemImage: "checkmark")
+                    Label("Restore", systemImage: "arrow.uturn.backward")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(IrizTheme.violet)
+            } else {
+                Button {
+                    clearPointerEmphasis()
+                    Task { await app.completeFollowUp(commitment) }
+                } label: {
+                    Image(systemName: "checkmark")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(IrizTheme.mint)
-
-                Button {
-                    Task { await app.updateCommitment(commitment, state: .dismissed) }
-                } label: {
-                    Label("Dismiss", systemImage: "xmark")
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-                .help("Remove this follow-up from the active list")
-
-                Spacer(minLength: 4)
+                .help("Done")
 
                 Menu {
-                    if ranked.effectiveState == .completionSuggested {
-                        Button("Keep Open") { Task { await app.updateCommitment(commitment, state: .needsAttention) } }
-                        Divider()
+                    Button("Tomorrow") {
+                        clearPointerEmphasis()
+                        Task { await app.snoozeCommitment(commitment, days: 1) }
                     }
-                    Button("Waiting for someone or something") {
-                        Task { await app.updateCommitment(commitment, state: .waiting) }
+                    Button("Next week") {
+                        clearPointerEmphasis()
+                        Task { await app.snoozeCommitment(commitment, days: 7) }
                     }
-                    Divider()
-                    Button("Snooze until tomorrow") { Task { await app.snoozeCommitment(commitment, days: 1) } }
-                    Button("Snooze until next week") { Task { await app.snoozeCommitment(commitment, days: 7) } }
-                    Button("Move to Later without a date") { Task { await app.updateCommitment(commitment, state: .later) } }
+                    Button("Choose date…") {
+                        clearPointerEmphasis()
+                        onCustomSnooze()
+                    }
                 } label: {
-                    Label("More", systemImage: "ellipsis.circle")
+                    Image(systemName: "moon.zzz")
                 }
                 .menuStyle(.borderlessButton)
-                .fixedSize()
+                .help("Snooze")
+
+                Button {
+                    clearPointerEmphasis()
+                    Task { await app.dismissFollowUp(commitment) }
+                } label: {
+                    Image(systemName: "eye.slash")
+                }
+                .buttonStyle(.bordered)
+                .help("Dismiss")
             }
-            .controlSize(.small)
+
         }
+        .controlSize(.small)
     }
 
-    private var stateSymbol: String {
-        switch ranked.effectiveState {
-        case .completionSuggested: "checkmark.circle"
-        case .completed: "checkmark.seal.fill"
-        case .maybe: "questionmark.circle"
-        case .waiting: "hourglass"
-        case .later: "clock"
-        case .needsAttention: "circle.dashed.inset.filled"
-        case .dismissed: "xmark.circle"
+    private var exportMenu: some View {
+        Menu {
+            Button("Add to Reminders") {
+                clearPointerEmphasis()
+                Task { await app.addFollowUpToReminders(commitment) }
+            }
+            Button("Copy") {
+                clearPointerEmphasis()
+                app.copyFollowUp(commitment)
+            }
+            Divider()
+            Button("Open details", action: openDetails)
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(.callout.weight(.semibold))
+                .frame(width: 24, height: 24)
         }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Share or export")
+    }
+}
+
+private struct CompletedFollowUpCard: View {
+    @EnvironmentObject private var app: AppState
+    let commitment: Commitment
+    let subject: FollowUpSubject
+    let compact: Bool
+    let onOpen: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Button(action: onOpen) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Circle().fill(subject.color.color).frame(width: 7, height: 7)
+                        Text(subject.name)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(subject.color.color)
+                        Spacer()
+                        Text((commitment.completedAt ?? commitment.updatedAt).formatted(.relative(presentation: .named)))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Text(commitment.action)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(compact ? 2 : 3)
+                        .multilineTextAlignment(.leading)
+                    Label(
+                        commitment.completionActor?.displayName ?? "Completed",
+                        systemImage: commitment.completionActor == .iriz ? "sparkles" : "person.fill.checkmark"
+                    )
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(IrizTheme.mint)
+                    Text(completionProof)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(compact ? 2 : 3)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            Button("Reopen") { Task { await app.reopenFollowUp(commitment) } }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(12)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(IrizTheme.card.opacity(0.92))
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(subject.color.color.opacity(0.09))
+            }
+        }
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(IrizTheme.mint.opacity(0.18)))
     }
 
-    private var stateTint: Color {
-        switch ranked.effectiveState {
-        case .completionSuggested: .orange
-        case .completed: IrizTheme.mint
-        case .maybe: .orange
-        default: IrizTheme.violet
+    private var completionProof: String {
+        if let evidence = commitment.completionEvidence,
+           !evidence.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Proof: \(evidence.summary)"
         }
+        if commitment.completionActor == .user {
+            return "Proof: marked complete by you."
+        }
+        return "Proof from this legacy completion is no longer available."
+    }
+}
+
+private struct NewFollowUpSheet: View {
+    @EnvironmentObject private var app: AppState
+    @Environment(\.dismiss) private var dismiss
+    let completion: (UUID?) -> Void
+    @State private var action = ""
+    @State private var details = ""
+    @State private var subjectID: String?
+    @State private var priority = 5
+    @State private var hasDueDate = false
+    @State private var dueAt = Date().addingTimeInterval(86_400)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("New Follow Up").font(.title2.weight(.bold))
+                    Text("Only the title is required.").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel") { completion(nil); dismiss() }
+                Button("Create") {
+                    Task {
+                        let id = await app.createManualFollowUp(
+                            action: action,
+                            details: details,
+                            subjectID: subjectID,
+                            priority: priority,
+                            dueAt: hasDueDate ? dueAt : nil
+                        )
+                        completion(id)
+                        dismiss()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(IrizTheme.violet)
+                .disabled(action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            Form {
+                TextField("Action", text: $action, axis: .vertical)
+                    .lineLimit(2...6)
+                    .fixedSize(horizontal: false, vertical: true)
+                TextField("Notes", text: $details, axis: .vertical)
+                    .lineLimit(3...7)
+                Picker("Subject", selection: $subjectID) {
+                    Text("Uncategorized").tag(String?.none)
+                    ForEach(app.followUpSubjects.filter { !FollowUpContextGrouper.isGenericSubjectName($0.name) }) { subject in
+                        Text(subject.name).tag(String?.some(subject.id))
+                    }
+                }
+                HStack {
+                    Text("Priority")
+                    Slider(value: Binding(get: { Double(priority) }, set: { priority = Int($0.rounded()) }), in: 0...10, step: 1)
+                    Text("\(priority)/10").monospacedDigit()
+                }
+                Toggle("Add a due date", isOn: $hasDueDate)
+                if hasDueDate { DatePicker("Due", selection: $dueAt) }
+            }
+            .formStyle(.grouped)
+        }
+        .padding(22)
+        .frame(width: 620, height: 540)
+    }
+}
+
+private struct CustomSnoozeSheet: View {
+    @EnvironmentObject private var app: AppState
+    @Environment(\.dismiss) private var dismiss
+    let commitment: Commitment
+    let completion: () -> Void
+    @State private var date = Date().addingTimeInterval(86_400)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Snooze Follow Up").font(.title2.weight(.bold))
+            Text(commitment.action).foregroundStyle(.secondary)
+            DatePicker("Return", selection: $date, in: Date()...)
+            HStack {
+                Spacer()
+                Button("Cancel") { completion(); dismiss() }
+                Button("Snooze") {
+                    Task {
+                        await app.snoozeFollowUp(commitment, until: date)
+                        completion()
+                        dismiss()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(IrizTheme.violet)
+            }
+        }
+        .padding(22)
+        .frame(width: 420)
+    }
+}
+
+private struct FollowUpSubjectManager: View {
+    @EnvironmentObject private var app: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var newName = ""
+    @State private var newTypeID = FollowUpType.uncategorizedID
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Subjects").font(.title2.weight(.bold))
+                    Text("Use specific clients, projects, or activities, then assign each one a type.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+            Divider()
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(app.followUpSubjects.filter { !FollowUpContextGrouper.isGenericSubjectName($0.name) }) { subject in
+                        SubjectEditorRow(subject: subject)
+                    }
+                }
+                .padding(18)
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    TextField("Client, project, or activity", text: $newName)
+                        .textFieldStyle(.roundedBorder)
+                    Picker("Type", selection: $newTypeID) {
+                        ForEach(app.followUpTypes) { type in Text(type.name).tag(type.id) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 150)
+                    Button("Add") {
+                        let type = app.followUpTypes.first(where: { $0.id == newTypeID })
+                            ?? FollowUpType.defaults.last!
+                        let subject = FollowUpSubject(name: newName, area: type.area, typeID: type.id)
+                        Task { await app.saveFollowUpSubject(subject) }
+                        newName = ""
+                        newTypeID = FollowUpType.uncategorizedID
+                    }
+                    .disabled(!canCreateSubject)
+                }
+                if !newName.isEmpty && FollowUpContextGrouper.isGenericSubjectName(newName) {
+                    Text("Choose a concrete subject such as Client Acme, Website Project, or Kids Activities.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(18)
+        }
+        .frame(width: 680, height: 600)
     }
 
-    private var reasonTint: Color {
-        switch ranked.effectiveState {
-        case .needsAttention, .completionSuggested: .orange
-        case .completed: IrizTheme.mint
-        default: .secondary
+    private var canCreateSubject: Bool {
+        !newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !FollowUpContextGrouper.isGenericSubjectName(newName)
+            && !app.followUpSubjects.contains {
+                $0.name.localizedCaseInsensitiveCompare(newName.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+            }
+    }
+}
+
+private struct SubjectEditorRow: View {
+    @EnvironmentObject private var app: AppState
+    let subject: FollowUpSubject
+    @State private var draft: FollowUpSubject
+
+    init(subject: FollowUpSubject) {
+        self.subject = subject
+        _draft = State(initialValue: subject)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Menu {
+                ForEach(FollowUpColorToken.allCases) { token in
+                    Button(token.rawValue.capitalized) {
+                        draft.color = token
+                        save()
+                    }
+                }
+            } label: {
+                Circle().fill(draft.color.color).frame(width: 18, height: 18)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+
+            TextField("Client, project, or activity", text: $draft.name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(save)
+            Picker("Type", selection: Binding(
+                get: { draft.typeID ?? FollowUpType.defaultID(for: draft.area) },
+                set: { identifier in
+                    draft.typeID = identifier
+                    if let type = app.followUpTypes.first(where: { $0.id == identifier }) {
+                        draft.area = type.area
+                    }
+                    save()
+                }
+            )) {
+                ForEach(app.followUpTypes) { type in Text(type.name).tag(type.id) }
+            }
+            .labelsHidden()
+            .frame(width: 140)
+            Text("Bias \(draft.priorityBias, format: .number.precision(.fractionLength(1)))")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 58)
+            Menu("Merge") {
+                ForEach(app.followUpSubjects.filter {
+                    $0.id != subject.id && !FollowUpContextGrouper.isGenericSubjectName($0.name)
+                }) { target in
+                    Button("Into \(target.name)") {
+                        Task { await app.mergeSubjects(sourceID: subject.id, into: target.id) }
+                    }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            Button {
+                Task { await app.mergeAllActiveFollowUps(in: subject.id) }
+            } label: {
+                Image(systemName: "square.stack.3d.up")
+            }
+            .buttonStyle(.bordered)
+            .help("Merge all active follow-ups in this subject")
         }
+        .padding(12)
+        .background(IrizTheme.card.opacity(0.72), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func save() {
+        draft.name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !draft.name.isEmpty,
+              !FollowUpContextGrouper.isGenericSubjectName(draft.name),
+              !app.followUpSubjects.contains(where: {
+                  $0.id != subject.id && $0.name.localizedCaseInsensitiveCompare(draft.name) == .orderedSame
+              }) else { return }
+        draft.updatedAt = Date()
+        Task { await app.saveFollowUpSubject(draft) }
+    }
+}
+
+private struct FollowUpTypeManager: View {
+    @EnvironmentObject private var app: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var newName = ""
+    @State private var newArea: FollowUpArea = .uncategorized
+    @State private var newColor: FollowUpColorToken = .violet
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Types").font(.title2.weight(.bold))
+                    Text("Create broad groupings for subjects, such as Client, Project, Family, or Administration.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+            Divider()
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(app.followUpTypes) { type in
+                        FollowUpTypeEditorRow(type: type)
+                    }
+                }
+                .padding(18)
+            }
+            Divider()
+            HStack(spacing: 10) {
+                Menu {
+                    ForEach(FollowUpColorToken.allCases) { token in
+                        Button(token.rawValue.capitalized) { newColor = token }
+                    }
+                } label: {
+                    Circle().fill(newColor.color).frame(width: 18, height: 18)
+                }
+                .menuStyle(.borderlessButton)
+                TextField("New type", text: $newName)
+                    .textFieldStyle(.roundedBorder)
+                Picker("Internal category", selection: $newArea) {
+                    ForEach(FollowUpArea.allCases) { area in Text(area.displayName).tag(area) }
+                }
+                .labelsHidden()
+                .frame(width: 160)
+                Button("Add") {
+                    let type = FollowUpType(name: newName, area: newArea, color: newColor)
+                    Task { await app.saveFollowUpType(type) }
+                    newName = ""
+                    newArea = .uncategorized
+                    newColor = .violet
+                }
+                .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(18)
+        }
+        .frame(width: 700, height: 600)
+    }
+}
+
+private struct FollowUpTypeEditorRow: View {
+    @EnvironmentObject private var app: AppState
+    let type: FollowUpType
+    @State private var draft: FollowUpType
+
+    private let icons = [
+        "briefcase.fill", "person.fill", "folder.fill", "building.2.fill",
+        "globe", "house.fill", "figure.2.and.child.holdinghands", "tray.full.fill"
+    ]
+
+    init(type: FollowUpType) {
+        self.type = type
+        _draft = State(initialValue: type)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Menu {
+                ForEach(FollowUpColorToken.allCases) { token in
+                    Button(token.rawValue.capitalized) {
+                        draft.color = token
+                        save()
+                    }
+                }
+            } label: {
+                Circle().fill(draft.color.color).frame(width: 18, height: 18)
+            }
+            .menuStyle(.borderlessButton)
+
+            Menu {
+                ForEach(icons, id: \.self) { icon in
+                    Button { draft.systemImage = icon; save() } label: {
+                        Label(icon, systemImage: icon)
+                    }
+                }
+            } label: {
+                Image(systemName: draft.systemImage).frame(width: 22)
+            }
+            .menuStyle(.borderlessButton)
+
+            TextField("Type name", text: $draft.name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(save)
+
+            Picker("Internal category", selection: $draft.area) {
+                ForEach(FollowUpArea.allCases) { area in Text(area.displayName).tag(area) }
+            }
+            .labelsHidden()
+            .frame(width: 150)
+            .onChange(of: draft.area) { _, _ in save() }
+
+            if type.isBuiltIn {
+                Text("Built in")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 58)
+            } else {
+                Button(role: .destructive) {
+                    Task { await app.deleteFollowUpType(type) }
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.bordered)
+                .disabled(app.followUpSubjects.contains(where: { $0.typeID == type.id }))
+                .help("Move this type's subjects before deleting it")
+            }
+        }
+        .padding(12)
+        .background(IrizTheme.card.opacity(0.72), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func save() {
+        draft.name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !draft.name.isEmpty else { return }
+        draft.updatedAt = Date()
+        Task { await app.saveFollowUpType(draft) }
     }
 }

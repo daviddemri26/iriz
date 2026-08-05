@@ -17,6 +17,25 @@ enum IrizTheme {
     static let gradient = LinearGradient(colors: [violet, coral], startPoint: .topLeading, endPoint: .bottomTrailing)
 }
 
+extension FollowUpColorToken {
+    var color: Color {
+        switch self {
+        case .violet: IrizTheme.violet
+        case .indigo: Color.indigo
+        case .blue: Color.blue
+        case .teal: Color.teal
+        case .mint: IrizTheme.mint
+        case .green: Color.green
+        case .yellow: Color.yellow
+        case .orange: Color.orange
+        case .coral: IrizTheme.coral
+        case .pink: Color.pink
+        case .plum: Color(red: 0.58, green: 0.22, blue: 0.55)
+        case .brown: Color.brown
+        }
+    }
+}
+
 struct IrizLogo: View {
     enum Shape {
         case appIcon

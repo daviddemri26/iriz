@@ -110,7 +110,7 @@ extension CaptureHealth {
 enum ObservationControlMetrics {
     static let floatingWidth: CGFloat = 276
     static let sidebarWidth: CGFloat = floatingWidth + 24
-    static let cardHeight: CGFloat = 354
+    static let cardHeight: CGFloat = 313
 }
 
 struct IrizStatusLegendItem: Identifiable {
@@ -344,7 +344,6 @@ struct ObservationControlCard: View {
             captureActionSlot
             sectionDivider
             ObservationChannelsControl(presentation: .compact)
-            followUpSensitivityControl
             controlRow
             footer
         }
@@ -475,51 +474,10 @@ struct ObservationControlCard: View {
         .controlSize(.small)
     }
 
-    private var followUpSensitivityControl: some View {
-        Menu {
-            ForEach(FollowUpSensitivity.allCases) { sensitivity in
-                Button {
-                    settings.settings.followUpSensitivity = sensitivity
-                } label: {
-                    if settings.settings.followUpSensitivity == sensitivity {
-                        Label(sensitivity.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(sensitivity.displayName)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "dial.medium")
-                    .font(.caption.weight(.semibold))
-                Text("Follow Up sensitivity")
-                    .font(.caption.weight(.semibold))
-                Spacer(minLength: 6)
-                Text(settings.settings.followUpSensitivity.displayName)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, minHeight: 34)
-            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.primary.opacity(0.075))
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .frame(height: 34)
-        .help("Change how selective Iriz is when showing follow-ups")
-        .accessibilityLabel("Follow Up sensitivity")
-        .accessibilityValue(settings.settings.followUpSensitivity.displayName)
-    }
-
     private var controlRow: some View {
         HStack(spacing: 6) {
             pauseButton
+            detailLevelMenu
             Button {
                 app.openMainWindow(section: .settings)
             } label: {
@@ -533,6 +491,40 @@ struct ObservationControlCard: View {
             .accessibilityLabel("Open Settings")
         }
         .frame(height: 34)
+    }
+
+    private var detailLevelMenu: some View {
+        Menu {
+            Section("New follow-ups") {
+                ForEach(FollowUpDetailLevel.allCases) { level in
+                    Button {
+                        settings.settings.followUpDetailLevel = level
+                    } label: {
+                        Label(
+                            level.displayName,
+                            systemImage: settings.settings.followUpDetailLevel == level
+                                ? "checkmark.circle.fill"
+                                : "circle"
+                        )
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "square.3.layers.3d")
+                Text(settings.settings.followUpDetailLevel.displayName)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 8)
+            .frame(minWidth: 86, minHeight: 34)
+            .background(Color.primary.opacity(0.065), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize(horizontal: true, vertical: false)
+        .help("Follow-up detail: \(settings.settings.followUpDetailLevel.description) Applies only to new tiles.")
+        .accessibilityLabel("Follow-up detail level, \(settings.settings.followUpDetailLevel.displayName)")
     }
 
     private var pauseButton: some View {

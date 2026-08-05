@@ -209,7 +209,7 @@ struct IrizCoreTests {
         let settings = try JSONDecoder().decode(IrizSettings.self, from: legacy)
         #expect(settings.audioMode == .alwaysOn)
         #expect(settings.captureTiming == .schedule)
-        #expect(settings.followUpSensitivity == .balanced)
+        #expect(settings.followUpDetailLevel == .standard)
         #expect(settings.showMenuBarItem)
         #expect(settings.showFloatingBubble)
     }
@@ -310,6 +310,52 @@ struct IrizCoreTests {
         #expect(reasoning["effort"] as? String == "none")
     }
 
+    @Test("Cloud follow-up requests expose only raw AI priority")
+    func cloudFollowUpPriorityPrivacy() throws {
+        let commitment = Commitment(
+            eventID: UUID(),
+            owner: "You",
+            action: "Send the client proposal",
+            contextLabel: "Client Acme",
+            confidence: 0.9,
+            state: .needsAttention,
+            area: .work,
+            aiPriorityScore: 3,
+            displayPriorityScore: 8,
+            userPriorityScore: 10,
+            manuallyEditedFields: [.priority]
+        )
+        let observationData = try OpenAIRequestFactory.interpretationRequest(
+            observation: Observation(source: .screen, text: "Acme proposal notes"),
+            imageData: nil,
+            outputLanguage: "English",
+            followUpCandidates: [commitment]
+        )
+        let observationObject = try #require(try JSONSerialization.jsonObject(with: observationData) as? [String: Any])
+        let observationInput = try #require(observationObject["input"] as? [[String: Any]])
+        let observationContent = try #require(observationInput.first?["content"] as? [[String: Any]])
+        let observationPrompt = try #require(observationContent.first?["text"] as? String)
+
+        #expect(observationPrompt.contains("\"priority\":3"))
+        #expect(!observationPrompt.contains("\"priority\":10"))
+        #expect(!observationPrompt.contains("priorityBias"))
+        #expect(!observationPrompt.contains("manuallyEditedFields"))
+
+        let mergeData = try OpenAIRequestFactory.followUpMergeRequest(
+            commitments: [commitment],
+            subject: FollowUpSubject(name: "Client Acme", area: .work, priorityBias: 3),
+            outputLanguage: "English"
+        )
+        let mergeObject = try #require(try JSONSerialization.jsonObject(with: mergeData) as? [String: Any])
+        let mergePrompt = try #require(mergeObject["input"] as? String)
+        #expect(mergePrompt.contains("\"priority\":3"))
+        #expect(!mergePrompt.contains("\"priority\":10"))
+        #expect(!mergePrompt.contains("priorityBias"))
+        #expect(!mergePrompt.contains("manuallyEditedFields"))
+        #expect(mergePrompt.contains("relationship=unrelated"))
+        #expect(mergeObject["store"] as? Bool == false)
+    }
+
     @Test("Assistant requests include only recent thread context and disable storage")
     func assistantConversationContextRequest() throws {
         let previous = (0..<6).map { index in
@@ -335,31 +381,56 @@ struct IrizCoreTests {
         #expect(input.contains("concise Markdown"))
     }
 
-    @Test("Follow-up sensitivity is included in observation guidance")
-    func followUpSensitivityPrompt() throws {
+    @Test("Observation guidance applies detail level only to newly created follow-ups")
+    func scoredFollowUpPrompt() throws {
         let observation = Observation(source: .screen, text: "I should send the small receipt later")
+        let existing = Commitment(
+            eventID: UUID(),
+            owner: "You",
+            action: "Submit the final expense report",
+            confidence: 0.9,
+            state: .needsAttention,
+            detailLevelAtCreation: .outcome
+        )
         let data = try OpenAIRequestFactory.interpretationRequest(
             observation: observation,
             imageData: nil,
             outputLanguage: "English",
-            followUpSensitivity: .detailed
+            followUpDetailLevel: .micro,
+            followUpCandidates: [existing]
         )
-        #expect(String(decoding: data, as: UTF8.self).contains("Follow-up sensitivity: Detailed"))
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let input = try #require(object["input"] as? [[String: Any]])
+        let content = try #require(input.first?["content"] as? [[String: Any]])
+        let prompt = try #require(content.first?["text"] as? String)
+        #expect(object["store"] as? Bool == false)
+        #expect(prompt.contains("Detail level for newly created follow-ups: Micro"))
+        #expect(prompt.contains("This setting applies only to operation=create"))
+        #expect(prompt.contains("\"createdDetailLevel\":\"outcome\""))
+        #expect(prompt.contains("priorityScore"))
+        #expect(prompt.contains("at least 0.60"))
     }
 
     @Test("Observation guidance reuses stable dynamic follow-up contexts")
     func followUpContextPrompt() throws {
         let observation = Observation(source: .screen, text: "Book the hotel for our trip")
+        let generic = FollowUpSubject(name: "Work", area: .work)
+        let concrete = FollowUpSubject(name: "Lafayette Website", area: .work)
         let data = try OpenAIRequestFactory.interpretationRequest(
             observation: observation,
             imageData: nil,
             outputLanguage: "French",
-            knownFollowUpContexts: ["Work", "Vacation with Léa"]
+            knownFollowUpContexts: ["Work", "Vacation with Léa"],
+            knownFollowUpSubjects: [generic, concrete]
         )
-        let request = String(decoding: data, as: UTF8.self)
-        #expect(request.contains("contextLabel"))
-        #expect(request.contains("Vacation with Léa"))
-        #expect(request.contains("Reuse an exact existing label"))
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let input = try #require(object["input"] as? [[String: Any]])
+        let content = try #require(input.first?["content"] as? [[String: Any]])
+        let prompt = try #require(content.first?["text"] as? String)
+        #expect(prompt.contains("area is only the broad Work, Personal, or Uncategorized type"))
+        #expect(prompt.contains("contextLabel must be a concrete, reusable subject"))
+        #expect(prompt.contains("Lafayette Website"))
+        #expect(!prompt.contains("\"name\":\"Work\""))
     }
 
     @Test("Assistant model effort scales only for genuinely larger retrieval sets")
@@ -525,8 +596,8 @@ struct IrizCoreTests {
         #expect(linked.rationale.contains("Possible completion evidence"))
     }
 
-    @Test("Sensitivity changes visibility without deleting follow-ups")
-    func followUpSensitivityFiltering() {
+    @Test("Detail level never hides existing follow-up tiles")
+    func followUpDetailLevelDoesNotFilterExistingTiles() {
         let event = ActivityEvent(
             startedAt: Date(),
             endedAt: Date(),
@@ -537,19 +608,28 @@ struct IrizCoreTests {
             summary: "A possible small task.",
             confidence: 0.7
         )
-        let small = Commitment(
+        let outcome = Commitment(
             eventID: event.id,
             owner: "You",
-            action: "Review the small detail",
+            action: "Finish the expense report",
             confidence: 0.55,
-            state: .maybe
+            state: .maybe,
+            detailLevelAtCreation: .outcome
         )
-        #expect(!FollowUpPrioritizer.isVisible(small, event: event, sensitivity: .essential))
-        #expect(!FollowUpPrioritizer.isVisible(small, event: event, sensitivity: .balanced))
-        #expect(FollowUpPrioritizer.isVisible(small, event: event, sensitivity: .detailed))
+        let micro = Commitment(
+            eventID: event.id,
+            owner: "You",
+            action: "Attach the taxi receipt",
+            confidence: 0.55,
+            state: .maybe,
+            detailLevelAtCreation: .micro
+        )
+        let ranked = FollowUpPrioritizer.ranked(commitments: [outcome, micro], events: [event])
+
+        #expect(Set(ranked.map(\.id)) == Set([outcome.id, micro.id]))
     }
 
-    @Test("Follow-ups form stable work, personal and named project contexts")
+    @Test("Follow-ups keep broad types separate from concrete subjects")
     func dynamicFollowUpContexts() {
         let workEvent = ActivityEvent(
             startedAt: Date(), endedAt: Date(), kind: .application, status: .inProgress,
@@ -569,13 +649,35 @@ struct IrizCoreTests {
             Commitment(eventID: tripEvent.id, owner: "You", action: "Book the hotel", contextLabel: "Vacation with Léa", confidence: 0.9, state: .later)
         ]
         let events = [workEvent, personalEvent, tripEvent]
-        let ranked = FollowUpPrioritizer.ranked(commitments: commitments, events: events, sensitivity: .detailed)
+        let ranked = FollowUpPrioritizer.ranked(commitments: commitments, events: events)
         let groups = FollowUpContextGrouper.groups(commitments: ranked, events: events)
 
-        #expect(groups.map(\.label).contains("Work"))
-        #expect(groups.map(\.label).contains("Personal"))
+        #expect(groups.map(\.label).contains("Applications"))
+        #expect(groups.map(\.label).contains("Orders & Purchases"))
         #expect(groups.map(\.label).contains("Vacation with Léa"))
-        #expect(FollowUpContextGrouper.contextLabels(from: commitments).contains("Work"))
+        #expect(!groups.map(\.label).contains("Work"))
+        #expect(!groups.map(\.label).contains("Personal"))
+        #expect(FollowUpContextGrouper.contextLabels(from: commitments) == ["Vacation with Léa"])
+        #expect(commitments.map(\.area) == [.work, .personal, .personal])
+    }
+
+    @Test("Older Follow Up display preferences default new color filters safely")
+    func legacyFollowUpDisplayPreferences() throws {
+        let legacy = Data("""
+        {
+          "selectedArea": "work",
+          "selectedSubjectIDs": ["lafayette-website"],
+          "minimumPriority": 14,
+          "viewMode": "active",
+          "completedRailMode": "rail",
+          "completedRailDuration": "oneDay"
+        }
+        """.utf8)
+        let preferences = try JSONDecoder().decode(FollowUpDisplayPreferences.self, from: legacy)
+        #expect(preferences.selectedColorTokens.isEmpty)
+        #expect(preferences.selectedTypeIDs.isEmpty)
+        #expect(preferences.minimumPriority == 10)
+        #expect(preferences.selectedSubjectIDs == ["lafayette-website"])
     }
 
     @Test("Older encrypted commitments decode without newer optional metadata")
@@ -613,7 +715,7 @@ struct IrizCoreTests {
         )
 
         let ranked = FollowUpPrioritizer.ranked(
-            commitments: [automatic, manual], events: [event], sensitivity: .essential, now: now
+            commitments: [automatic, manual], events: [event], now: now
         )
 
         #expect(ranked.first?.id == manual.id)
@@ -681,7 +783,6 @@ struct IrizCoreTests {
         let sections = FollowUpPrioritizer.sections(
             commitments: commitments,
             events: [event],
-            sensitivity: .detailed,
             now: now
         )
         let ranked = sections.flatMap(\.commitments)
@@ -699,11 +800,25 @@ struct IrizCoreTests {
         let old = Date().addingTimeInterval(-100 * 24 * 60 * 60)
         let event = ActivityEvent(startedAt: old, endedAt: old, kind: .note, status: .completed, importance: .normal, title: "Old", summary: "Old", confidence: 1)
         let observation = Observation(source: .screen, capturedAt: old, expiresAt: old, text: "expired")
+        let completedFollowUp = Commitment(
+            eventID: event.id,
+            owner: "David",
+            action: "Old completed follow-up",
+            confidence: 1,
+            state: .completed,
+            createdAt: old,
+            updatedAt: old,
+            lifecycle: .completed,
+            completedAt: old,
+            completionActor: .user
+        )
         try await store.saveEvent(event)
         try await store.saveObservation(observation)
+        try await store.saveCommitment(completedFollowUp)
         try await store.purgeExpired(now: Date(), retention: .ninetyDays)
         #expect(try await store.eventCount() == 0)
         #expect(try await store.observation(id: observation.id) == nil)
+        #expect(try await store.commitments(includingClosed: true).isEmpty)
     }
 
     @Test("Expired encrypted media is physically removed")
