@@ -91,24 +91,18 @@ struct FollowUpDetailView: View {
                 .keyboardShortcut(.cancelAction)
             }
 
-            HStack(alignment: .top, spacing: 10) {
-                TextField("Follow-up title", text: actionBinding, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .focused($titleIsFocused)
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .lineLimit(2...4)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("Follow-up title")
-                    .accessibilityAddTraits(.isHeader)
-                Image(systemName: "pencil")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(subjectColor)
-                    .padding(.top, 5)
-            }
+            TextField("Follow-up title", text: actionBinding, axis: .vertical)
+                .textFieldStyle(.plain)
+                .focused($titleIsFocused)
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .lineLimit(2...4)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("Follow-up title")
+                .accessibilityAddTraits(.isHeader)
             .padding(.horizontal, 11)
             .padding(.vertical, 9)
-            .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 11).stroke(subjectColor.opacity(0.20)))
+            .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(subjectColor.opacity(0.30)))
 
             VStack(alignment: .leading, spacing: 6) {
                 Label("Description", systemImage: "text.alignleft")
@@ -119,8 +113,8 @@ struct FollowUpDetailView: View {
                     .scrollContentBackground(.hidden)
                     .frame(height: 72)
                     .padding(8)
-                    .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.08)))
+                    .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.10)))
                     .accessibilityLabel("Description")
             }
 
@@ -240,9 +234,13 @@ struct FollowUpDetailView: View {
                 Task { await app.completeFollowUp(currentCommitment) }
             } label: {
                 Label("Done", systemImage: "checkmark")
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 7)
+                    .frame(minHeight: 30)
             }
             .buttonStyle(.borderedProminent)
             .tint(IrizTheme.mint)
+            .controlSize(.large)
 
             Menu {
                 Button("Tomorrow") { snooze(days: 1) }
@@ -438,7 +436,7 @@ struct FollowUpDetailView: View {
                 }
                 if linkedEvents.isEmpty {
                     ContentUnavailableView(
-                        "No linked Journal events",
+                        "No linked memory sources",
                         systemImage: "doc.text.magnifyingglass",
                         description: Text("Structured evidence will appear here when Iriz links activity to this follow-up.")
                     )
@@ -465,7 +463,7 @@ struct FollowUpDetailView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                Button("Open in Journal") { app.openEvent(evidence.eventID) }
+                Button("Open Source") { app.openEvent(evidence.eventID) }
                     .buttonStyle(.link)
             }
         }
@@ -506,7 +504,7 @@ struct FollowUpDetailView: View {
                 Button {
                     app.openEvent(event.id)
                 } label: {
-                    Label("Open in Journal", systemImage: "arrow.up.forward.square")
+                    Label("Open Source", systemImage: "arrow.up.forward.square")
                 }
                 .buttonStyle(.bordered)
             }
@@ -640,7 +638,7 @@ struct FollowUpDetailView: View {
                                     .foregroundStyle(.secondary)
                                     .textSelection(.enabled)
                                 if let eventID = entry.eventID {
-                                    Button("Open evidence in Journal") { app.openEvent(eventID) }
+                                    Button("Open Evidence Source") { app.openEvent(eventID) }
                                         .buttonStyle(.link)
                                         .font(.caption)
                                 }
@@ -846,12 +844,13 @@ struct FollowUpDetailView: View {
 
     private var detailBackground: some View {
         ZStack {
-            IrizTheme.canvas
+            Color(red: 0.10, green: 0.10, blue: 0.12)
             LinearGradient(
-                colors: [subjectColor.opacity(0.18), subjectColor.opacity(0.07), .clear],
+                colors: [subjectColor.opacity(0.34), subjectColor.opacity(0.18)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
+            Color.white.opacity(0.018)
         }
     }
 

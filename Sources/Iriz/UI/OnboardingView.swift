@@ -47,7 +47,7 @@ struct OnboardingView: View {
         VStack(spacing: 20) {
             IrizLogo(size: 84)
             Text("Remember what you actually did").font(.system(size: 38, weight: .bold)).multilineTextAlignment(.center)
-            Text("Iriz turns meaningful actions, decisions and commitments into a private, searchable journal — while routine app activity stays in the background.")
+            Text("Iriz turns meaningful actions, decisions and commitments into a private, searchable memory — while routine app activity stays in the background.")
                 .font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
     }
@@ -55,7 +55,7 @@ struct OnboardingView: View {
     private var privacy: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Local first, by design").font(.system(size: 34, weight: .bold))
-            OnboardingPoint(icon: "lock.fill", title: "Encrypted on your Mac", text: "The journal, search index, screenshots and audio are encrypted locally. Raw media expires after 24 hours.")
+            OnboardingPoint(icon: "lock.fill", title: "Encrypted on your Mac", text: "Your memory, search index, screenshots and audio are encrypted locally. Raw media expires after 24 hours.")
             OnboardingPoint(icon: "keyboard", title: "No keyboard or clipboard capture", text: "Iriz never records keystrokes, clipboard contents or camera video.")
             OnboardingPoint(icon: "eye.slash", title: "Sensitive places stay invisible", text: "Password managers and authentication windows are excluded, and you can add apps or domains.")
         }
@@ -113,7 +113,7 @@ struct OnboardingView: View {
                 .font(.callout).foregroundStyle(.secondary)
             if app.secureStorageState == .needsApproval {
                 HStack {
-                    Label("Keychain approval is required for the encrypted journal.", systemImage: "lock.shield")
+                    Label("Keychain approval is required for encrypted memory.", systemImage: "lock.shield")
                     Spacer()
                     Button("Unlock Secure Storage") {
                         Task { await app.unlockSecureStorage() }

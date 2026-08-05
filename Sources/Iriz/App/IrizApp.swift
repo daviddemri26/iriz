@@ -23,8 +23,6 @@ struct IrizApp: App {
         .defaultSize(width: 1080, height: 720)
         .commands {
             CommandGroup(after: .appInfo) {
-                Button("Open Journal") { app.openMainWindow(section: .journal) }
-                    .keyboardShortcut("j", modifiers: [.command, .shift])
                 Button(settings.settings.isPaused ? "Resume Iriz" : "Pause Iriz") {
                     app.setPaused(!settings.settings.isPaused)
                 }

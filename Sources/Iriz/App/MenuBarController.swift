@@ -88,7 +88,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         menu.addItem(actionItem(title: "Mark Moment", symbol: "bookmark.fill", action: #selector(markMoment)))
-        menu.addItem(actionItem(title: "Open Journal", symbol: "clock.arrow.circlepath", action: #selector(openJournal)))
         menu.addItem(actionItem(title: "Open Follow Up", symbol: "checklist", action: #selector(openFollowUp)))
         menu.addItem(actionItem(title: "Ask Iriz", symbol: "sparkles", action: #selector(openAssistant)))
         menu.addItem(.separator())
@@ -125,10 +124,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func markMoment() {
         Task { await app.markMoment() }
-    }
-
-    @objc private func openJournal() {
-        app.openMainWindow(section: .journal)
     }
 
     @objc private func openFollowUp() {

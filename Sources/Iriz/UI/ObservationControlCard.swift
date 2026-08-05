@@ -425,7 +425,6 @@ struct ObservationControlCard: View {
         HStack(spacing: 6) {
             ControlShortcut(title: "Ask", symbol: "sparkles", tint: .primary) { app.openMainWindow(section: .assistant) }
             ControlShortcut(title: "Follow Up", symbol: "checklist", tint: .primary) { app.openMainWindow(section: .followUp) }
-            ControlShortcut(title: "Journal", symbol: "clock.arrow.circlepath", tint: .primary) { app.openMainWindow(section: .journal) }
         }
         .frame(height: 40)
     }

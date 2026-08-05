@@ -3,7 +3,7 @@ import SwiftUI
 private enum SettingsCategory: String, CaseIterable, Identifiable {
     case capture = "Capture"
     case intelligence = "AI & Language"
-    case journal = "Journal"
+    case memory = "Memory"
     case privacy = "Privacy"
 
     var id: String { rawValue }
@@ -70,13 +70,13 @@ struct SettingsView: View {
                 withAnimation(.snappy(duration: 0.2)) { isChoosingLanguage = false }
             }
         }
-        .alert("Export an unencrypted journal?", isPresented: Binding(
+        .alert("Export unencrypted memory data?", isPresented: Binding(
             get: { pendingExport != nil },
             set: { if !$0 { pendingExport = nil } }
         )) {
             Button("Cancel", role: .cancel) { pendingExport = nil }
             Button("Export") {
-                if let format = pendingExport { Task { await app.exportJournal(format: format) } }
+                if let format = pendingExport { Task { await app.exportMemory(format: format) } }
                 pendingExport = nil
             }
         } message: {
@@ -88,7 +88,7 @@ struct SettingsView: View {
                 Task { await app.resetFollowUps() }
             }
         } message: {
-            Text("This clears every follow-up and subject, but keeps your Journal, media, conversations, API key, and settings.")
+            Text("This clears every follow-up and subject, but keeps your memory data, media, conversations, API key, and settings.")
         }
     }
 
@@ -102,8 +102,8 @@ struct SettingsView: View {
             apiSection
             followUpDetailLevelSection
             languageSection
-        case .journal:
-            journalSection
+        case .memory:
+            memorySection
         case .privacy:
             permissionsSection
             exclusionsSection
@@ -281,7 +281,7 @@ struct SettingsView: View {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Menu Bar Icon")
-                        Text("A compact flat Iriz logo with Pause, Observe, Listen, Journal, Follow Up and Ask Iriz.")
+                        Text("A compact flat Iriz logo with Pause, Observe, Listen, Follow Up and Ask Iriz.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -336,7 +336,7 @@ struct SettingsView: View {
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Start with a clean Follow Up workspace")
-                    Text("Clears follow-ups and subjects only. Journal history is preserved.")
+                    Text("Clears follow-ups and subjects only. Memory history is preserved.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -351,12 +351,12 @@ struct SettingsView: View {
     private var languageSection: some View {
         SettingsGroup(
             title: "Language",
-            subtitle: "The interface stays in American English. This language guides journal writing and helps Iriz understand meetings and voice sessions."
+            subtitle: "The interface stays in American English. This language guides memory summaries and helps Iriz understand meetings and voice sessions."
         ) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Journal & speech language")
+                        Text("Memory & speech language")
                         Text("Iriz treats this as your usual language, not a restriction when another language is clearly spoken.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -377,9 +377,9 @@ struct SettingsView: View {
         }
     }
 
-    private var journalSection: some View {
+    private var memorySection: some View {
         SettingsGroup(
-            title: "Journal & Retention",
+            title: "Memory & Retention",
             subtitle: "Choose how long useful structured memories remain and when Iriz gives you a quiet recap."
         ) {
             Picker("Keep events and useful transcripts", selection: $settings.settings.structuredRetention) {
@@ -547,7 +547,7 @@ struct SettingsView: View {
 
     private var privacySection: some View {
         SettingsGroup(title: "Privacy", subtitle: "No Iriz account, analytics, or Iriz server is used in this version.") {
-            Label("The encrypted journal, full-text index and semantic ranking stay on this Mac.", systemImage: "lock.shield")
+            Label("The encrypted memory, full-text index and semantic ranking stay on this Mac.", systemImage: "lock.shield")
             Label("Only selected OCR, transcripts, key screenshots, and the current assistant question with recent thread context are sent directly to OpenAI.", systemImage: "arrow.up.forward")
             Text("API requests use store: false. OpenAI may retain API inputs in abuse-monitoring logs for up to 30 days unless your organization is approved for Zero Data Retention. Inform participants before recording audio and obtain jurisdiction-specific legal advice before distributing Iriz.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

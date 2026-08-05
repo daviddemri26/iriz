@@ -130,10 +130,10 @@ final class SettingsStore: ObservableObject {
 
     func outputLanguagePrompt() -> String {
         guard settings.outputLanguageTag != "auto" else {
-            return "the source language. Detect the language from the evidence and preserve it in journals, meeting notes, and answers"
+            return "the source language. Detect the language from the evidence and preserve it in memory summaries, meeting notes, and answers"
         }
         let name = outputLanguageDescription()
-        return "\(name) (\(settings.outputLanguageTag)). This is the user's usual language for journals, meetings, and voice sessions. Treat it as a strong language hint, while preserving clearly different source-language content"
+        return "\(name) (\(settings.outputLanguageTag)). This is the user's usual language for memory summaries, meetings, and voice sessions. Treat it as a strong language hint, while preserving clearly different source-language content"
     }
 
     private func persist() {

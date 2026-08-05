@@ -1,6 +1,6 @@
 # Iriz
 
-Iriz is a native, local-first macOS contextual memory. It watches for meaningful changes on the active screen, can segment ambient speech, and turns evidence into a searchable journal of actions and follow-ups.
+Iriz is a native, local-first macOS contextual memory. It watches for meaningful changes on the active screen, can segment ambient speech, and turns evidence into searchable memory and useful follow-ups.
 
 Public repository: [github.com/daviddemri26/iriz](https://github.com/daviddemri26/iriz)
 
@@ -15,7 +15,7 @@ Public repository: [github.com/daviddemri26/iriz](https://github.com/daviddemri2
 - OpenAI Responses and Transcriptions clients using a user-provided API key stored in Keychain.
 - Local SQLite FTS5 index. The live database is held in memory and serialized into an AES-GCM encrypted file, so event text is not left as a plaintext SQLite file on disk.
 - AES-GCM encrypted media with 24-hour cleanup.
-- Journal, Follow Up, text assistant, Settings, onboarding, retention, exclusions, launch-at-login controls, and warned JSON/Markdown exports without raw media.
+- Ask Iriz, Follow Up, source details, Settings, onboarding, retention, exclusions, launch-at-login controls, and warned JSON/Markdown memory exports without raw media.
 - Standalone and future Setapp distribution adapters.
 
 The packaged personal build does not contain an API key. Enter one in **Settings → OpenAI**. Tests do not call OpenAI.

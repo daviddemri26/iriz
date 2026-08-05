@@ -3,7 +3,7 @@ import SwiftUI
 struct MainWindowView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var settings: SettingsStore
-    private let primarySections: [MainSection] = [.assistant, .followUp, .journal]
+    private let primarySections: [MainSection] = [.assistant, .followUp]
 
     var body: some View {
         Group {
@@ -25,6 +25,10 @@ struct MainWindowView: View {
         .frame(minWidth: 900, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
         .background(IrizTheme.canvas)
         .task { await app.refresh() }
+        .sheet(item: selectedEvent) { event in
+            SourceDetailView(event: event)
+                .environmentObject(app)
+        }
         .alert(
             "These follow-ups may be unrelated",
             isPresented: Binding(
@@ -99,11 +103,19 @@ struct MainWindowView: View {
 
     @ViewBuilder private var detail: some View {
         switch app.selectedSection {
-        case .journal: JournalView()
         case .followUp: FollowUpView()
         case .assistant: AssistantView()
         case .settings: SettingsView()
         }
+    }
+
+    private var selectedEvent: Binding<ActivityEvent?> {
+        Binding(
+            get: { app.presentedEvent },
+            set: { value in
+                if value == nil { app.closeEvent() }
+            }
+        )
     }
 
     private func mergeWarningMessage(_ warning: PendingFollowUpMergeConfirmation) -> String {

@@ -22,7 +22,7 @@ enum SecureStorageState: Equatable, Sendable {
 final class AppState: ObservableObject {
     static let shared = AppState()
 
-    @Published var selectedSection: MainSection = .journal
+    @Published var selectedSection: MainSection = .assistant
     @Published private(set) var events: [ActivityEvent] = []
     @Published private(set) var commitments: [Commitment] = []
     @Published private(set) var resolvedCommitments: [Commitment] = []
@@ -35,7 +35,7 @@ final class AppState: ObservableObject {
     @Published private(set) var pendingCount = 0
     @Published private(set) var latestInsight: ActivityEvent?
     @Published private(set) var storageError: String?
-    @Published var selectedEventID: UUID?
+    @Published private(set) var presentedEvent: ActivityEvent?
     @Published var isAsking = false
     @Published private(set) var exportMessage: String?
     @Published private(set) var isEnrollingVoice = false
@@ -139,7 +139,6 @@ final class AppState: ObservableObject {
             mediaStore = stores.1
             searchService = LocalSearchService(repository: stores.0)
             secureStorageState = .ready
-            DistributionEnvironment.markStableKeychainReady()
             storageError = nil
         } catch {
             repository = nil
@@ -147,7 +146,7 @@ final class AppState: ObservableObject {
             searchService = nil
             if let keychainError = error as? KeychainStoreError, keychainError.requiresUserApproval {
                 secureStorageState = .needsApproval
-                storageError = "Iriz needs one explicit Keychain approval before it can open your encrypted journal."
+                storageError = "Iriz needs one explicit Keychain approval before it can open your encrypted memory."
                 captureHealth = .permissionNeeded("Keychain access")
             } else {
                 secureStorageState = .unavailable(error.localizedDescription)
@@ -1380,9 +1379,19 @@ final class AppState: ObservableObject {
     }
 
     func openEvent(_ id: UUID) {
-        selectedEventID = id
-        selectedSection = .journal
         openMainWindow()
+        if let event = events.first(where: { $0.id == id }) {
+            presentedEvent = event
+            return
+        }
+        Task { [weak self] in
+            guard let self, let repository else { return }
+            presentedEvent = try? await repository.event(id: id)
+        }
+    }
+
+    func closeEvent() {
+        presentedEvent = nil
     }
 
     func openMainWindow(section: MainSection? = nil) {
@@ -1414,7 +1423,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    func exportJournal(format: ExportFormat) async {
+    func exportMemory(format: ExportFormat) async {
         guard let repository else { return }
         do {
             let eventValues = try await repository.events(limit: 100_000, importantOnly: false)

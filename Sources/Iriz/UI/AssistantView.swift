@@ -285,7 +285,7 @@ private struct SuggestedQuestions: View {
             VStack(spacing: 5) {
                 Text("What would you like to remember?")
                     .font(.title2.weight(.semibold))
-                Text("Ask naturally. Iriz searches the journal on this Mac before composing an answer.")
+                Text("Ask naturally. Iriz searches your memory on this Mac before composing an answer.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

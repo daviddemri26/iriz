@@ -26,8 +26,6 @@ enum IrizBuildChannel: String, Equatable, Sendable {
 }
 
 enum DistributionEnvironment {
-    private static let stableKeychainMarker = "iriz.keychain.stable-signature-ready"
-
     static var buildChannel: IrizBuildChannel {
 #if DEBUG
         IrizBuildChannel.resolve(infoDictionary: Bundle.main.infoDictionary, isDebug: true)
@@ -58,30 +56,7 @@ enum DistributionEnvironment {
     }
 
     static var requiresExplicitKeychainUnlock: Bool {
-        if isAdHocBuild { return true }
-        // The first stable build must migrate an existing development journal deliberately.
-        // This prevents a legacy ad hoc ACL from surprising the user.
-        return hasExistingJournal && !UserDefaults.standard.bool(forKey: stableKeychainMarker)
-    }
-
-    static func markStableKeychainReady() {
-        guard !isAdHocBuild else { return }
-        UserDefaults.standard.set(true, forKey: stableKeychainMarker)
-    }
-
-    private static var hasExistingJournal: Bool {
-        guard let support = try? FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: false
-        ) else { return false }
-        return FileManager.default.fileExists(
-            atPath: support
-                .appendingPathComponent("Iriz", isDirectory: true)
-                .appendingPathComponent("Iriz.sqlite.iriz")
-                .path
-        )
+        isAdHocBuild
     }
 }
 

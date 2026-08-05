@@ -382,14 +382,12 @@ enum CaptureHealth: Equatable, Sendable {
 enum MainSection: String, CaseIterable, Identifiable, Sendable {
     case assistant = "Ask Iriz"
     case followUp = "Follow Up"
-    case journal = "Journal"
     case settings = "Settings"
 
     var id: String { rawValue }
 
     var symbolName: String {
         switch self {
-        case .journal: "clock.arrow.circlepath"
         case .followUp: "checklist"
         case .assistant: "sparkles"
         case .settings: "gearshape"

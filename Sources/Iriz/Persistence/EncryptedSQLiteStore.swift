@@ -13,11 +13,11 @@ enum SQLiteStoreError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .openFailed(let message): "Unable to open the local journal: \(message)"
+        case .openFailed(let message): "Unable to open local memory: \(message)"
         case .sqlite(let code, let message, let sql):
             "SQLite error \(code): \(message)\(sql.map { " while running \($0)" } ?? "")"
-        case .serializationFailed: "The local journal could not be encrypted."
-        case .invalidStoredData: "The encrypted journal could not be decoded."
+        case .serializationFailed: "Local memory could not be encrypted."
+        case .invalidStoredData: "Encrypted memory could not be decoded."
         case .invalidCommitment(let reason): "The follow-up could not be saved: \(reason)"
         case .invalidFollowUpSubject(let reason): "The follow-up subject could not be saved: \(reason)"
         case .invalidFollowUpType(let reason): "The follow-up type could not be saved: \(reason)"

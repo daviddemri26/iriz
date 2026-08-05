@@ -30,7 +30,7 @@ enum ExportService {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             return try encoder.encode(IrizExport(exportedAt: now, events: sanitizedEvents, commitments: commitments))
         case .markdown:
-            var lines = ["# Iriz Journal", "", "Exported \(now.formatted(date: .long, time: .shortened))", ""]
+            var lines = ["# Iriz Memory Export", "", "Exported \(now.formatted(date: .long, time: .shortened))", ""]
             for event in sanitizedEvents {
                 lines.append("## \(event.title)")
                 lines.append("")
@@ -56,8 +56,8 @@ enum ExportService {
     @MainActor
     static func save(_ data: Data, format: ExportFormat) throws -> URL? {
         let panel = NSSavePanel()
-        panel.title = "Export Iriz Journal"
-        panel.nameFieldStringValue = "Iriz Journal.\(format.rawValue == "json" ? "json" : "md")"
+        panel.title = "Export Iriz Memory"
+        panel.nameFieldStringValue = "Iriz Memory.\(format.rawValue == "json" ? "json" : "md")"
         panel.canCreateDirectories = true
         panel.message = "This export is not encrypted. Store it somewhere private. Raw screenshots and audio are not included."
         guard panel.runModal() == .OK, let url = panel.url else { return nil }

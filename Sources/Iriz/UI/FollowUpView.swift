@@ -12,39 +12,70 @@ struct FollowUpView: View {
     @State private var snoozeTarget: Commitment?
     @State private var isManagingSubjects = false
     @State private var isManagingTypes = false
+    @State private var canvasNotice: FollowUpCanvasNotice?
+    @State private var canvasNoticeTask: Task<Void, Never>?
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { timeline in
-            GeometryReader { geometry in
-                VStack(spacing: 0) {
-                    header
-                    Divider()
-                    filterBar
-                    Divider()
-                    if settings.settings.followUpDisplay.completedRailMode == .expanded {
-                        completedArchive(now: timeline.date)
-                    } else {
-                        HStack(spacing: 0) {
-                            activeCanvas(now: timeline.date)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            if shouldShowCompletedRail {
-                                Divider()
-                                completedRail(now: timeline.date)
-                                    .frame(width: 232)
+        ZStack(alignment: .bottom) {
+            TimelineView(.periodic(from: .now, by: 60)) { timeline in
+                GeometryReader { geometry in
+                    VStack(spacing: 0) {
+                        header
+                        Divider()
+                        filterBar
+                        Divider()
+                        if settings.settings.followUpDisplay.completedRailMode == .expanded {
+                            completedArchive(now: timeline.date)
+                        } else {
+                            HStack(spacing: 0) {
+                                activeCanvas(now: timeline.date)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                if shouldShowCompletedRail {
+                                    Divider()
+                                    completedRail(now: timeline.date)
+                                        .frame(width: 232)
+                                }
                             }
                         }
                     }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
                 }
-                .frame(width: geometry.size.width, height: geometry.size.height)
+            }
+
+            if let notice = canvasNotice {
+                canvasNoticeBanner(notice)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 24)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(5)
+            }
+
+            if let commitment = selectedFollowUp {
+                Color.black.opacity(0.58)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: closeSelectedFollowUp)
+                    .transition(.opacity)
+                    .zIndex(10)
+
+                FollowUpDetailView(commitment: commitment) {
+                    closeSelectedFollowUp()
+                }
+                .environmentObject(app)
+                .environmentObject(settings)
+                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .stroke(.white.opacity(0.18), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.46), radius: 34, y: 18)
+                .transition(.scale(scale: 0.975).combined(with: .opacity))
+                .accessibilityAddTraits(.isModal)
+                .zIndex(11)
             }
         }
-        .sheet(item: $selectedFollowUp) { commitment in
-            FollowUpDetailView(commitment: commitment) {
-                selectedFollowUp = nil
-            }
-            .environmentObject(app)
-            .environmentObject(settings)
-        }
+        .animation(.snappy(duration: 0.22), value: selectedFollowUp?.id)
+        .animation(.snappy(duration: 0.2), value: canvasNotice)
         .sheet(isPresented: $isCreating) {
             NewFollowUpSheet { createdID in
                 isCreating = false
@@ -67,10 +98,61 @@ struct FollowUpView: View {
             FollowUpTypeManager()
                 .environmentObject(app)
         }
+        .onDisappear { canvasNoticeTask?.cancel() }
     }
 
     private var preferences: FollowUpDisplayPreferences {
         settings.settings.followUpDisplay
+    }
+
+    private func closeSelectedFollowUp() {
+        withAnimation(.snappy(duration: 0.2)) {
+            selectedFollowUp = nil
+        }
+    }
+
+    private func showMergeGuidance() {
+        canvasNoticeTask?.cancel()
+        withAnimation(.snappy(duration: 0.2)) {
+            canvasNotice = .mergeGuidance
+        }
+        canvasNoticeTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            withAnimation(.snappy(duration: 0.2)) {
+                canvasNotice = nil
+            }
+        }
+    }
+
+    private func clearCanvasNotice() {
+        canvasNoticeTask?.cancel()
+        canvasNoticeTask = nil
+        withAnimation(.snappy(duration: 0.18)) {
+            canvasNotice = nil
+        }
+    }
+
+    private func canvasNoticeBanner(_ notice: FollowUpCanvasNotice) -> some View {
+        HStack(spacing: 13) {
+            Image(systemName: notice.symbol)
+                .font(.title2.weight(.bold))
+                .foregroundStyle(notice.tint)
+            Text(notice.message)
+                .font(.title3.weight(.semibold))
+                .multilineTextAlignment(.center)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 16)
+        .background(Color(red: 0.10, green: 0.10, blue: 0.12).opacity(0.94), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(.white.opacity(0.14))
+        }
+        .shadow(color: .black.opacity(0.34), radius: 18, y: 8)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
     }
 
     private var header: some View {
@@ -328,7 +410,9 @@ struct FollowUpView: View {
                             type: type(for: commitment),
                             onOpen: { selectedFollowUp = commitment },
                             onCustomSnooze: { snoozeTarget = commitment },
+                            onDragBegan: showMergeGuidance,
                             onMerge: { sourceID in
+                                clearCanvasNotice()
                                 Task { await app.mergeFollowUps(ids: [sourceID, commitment.id], targetID: commitment.id) }
                             }
                         )
@@ -613,6 +697,22 @@ private enum CompletedArchivePeriod: String, CaseIterable, Identifiable {
     }
 }
 
+private struct FollowUpCanvasNotice: Equatable {
+    let symbol: String
+    let message: String
+    let tint: Color
+
+    static let mergeGuidance = FollowUpCanvasNotice(
+        symbol: "arrow.triangle.merge",
+        message: "Drop this tile onto another to merge them.",
+        tint: IrizTheme.mint
+    )
+
+    static func == (lhs: FollowUpCanvasNotice, rhs: FollowUpCanvasNotice) -> Bool {
+        lhs.symbol == rhs.symbol && lhs.message == rhs.message
+    }
+}
+
 enum FollowUpTilePriorityBand: Equatable {
     case critical
     case elevated
@@ -647,6 +747,7 @@ private struct FollowUpTile: View {
     let type: FollowUpType
     let onOpen: () -> Void
     let onCustomSnooze: () -> Void
+    let onDragBegan: () -> Void
     let onMerge: (UUID) -> Void
     @State private var isHovered = false
     @State private var isDropTarget = false
@@ -726,7 +827,11 @@ private struct FollowUpTile: View {
             openDetails()
             return .handled
         }
-        .draggable(commitment.id.uuidString)
+        .onDrag {
+            clearPointerEmphasis()
+            onDragBegan()
+            return NSItemProvider(object: commitment.id.uuidString as NSString)
+        }
         .dropDestination(for: String.self) { items, _ in
             guard let rawID = items.first,
                   let sourceID = UUID(uuidString: rawID),
@@ -913,9 +1018,15 @@ private struct FollowUpTile: View {
                     Task { await app.completeFollowUp(commitment) }
                 } label: {
                     Image(systemName: "checkmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(IrizTheme.mint, in: Circle())
+                        .overlay(Circle().stroke(.white.opacity(0.20)))
+                        .shadow(color: IrizTheme.mint.opacity(0.26), radius: 6, y: 2)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(IrizTheme.mint)
+                .buttonStyle(.plain)
+                .contentShape(Circle())
                 .help("Done")
 
                 Menu {
