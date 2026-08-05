@@ -43,6 +43,12 @@ struct SettingsView: View {
         .background(IrizTheme.canvas)
         .onAppear(perform: loadEditableBoundaries)
         .task { await permissionMonitor.monitor() }
+        .task {
+            while !Task.isCancelled {
+                await app.refreshLocalIntelligenceStatus()
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
         .onChange(of: settings.settings.audioSchedule) { _, _ in
             app.configureAudio()
         }
@@ -178,6 +184,7 @@ struct SettingsView: View {
             captureTimingSection
             meetingsSection
         case .intelligence:
+            localIntelligenceSection
             apiSection
             languageSection
         case .actions:
@@ -463,6 +470,65 @@ struct SettingsView: View {
         }
     }
 
+    private var localIntelligenceSection: some View {
+        SettingsCard(
+            title: "On-device intelligence",
+            subtitle: "Separately qualified Apple capabilities can discard empty observations or create bounded low-risk observed events.",
+            symbol: "apple.intelligence",
+            tint: IrizTheme.mint
+        ) {
+            HStack(alignment: .top, spacing: 11) {
+                Image(systemName: localIntelligenceIsActive ? "checkmark.circle.fill" : "arrow.trianglehead.2.clockwise.rotate.90.circle")
+                    .font(.title3)
+                    .foregroundStyle(localIntelligenceIsActive ? IrizTheme.mint : Color.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(localIntelligenceIsActive ? "On-device intelligence active" : "OpenAI fallback active")
+                        .font(.callout.weight(.semibold))
+                    Text(localIntelligenceStatusDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
+
+            SettingsCallout(
+                symbol: "shield.lefthalf.filled",
+                text: "Fallback preserves analysis quality, but it can increase API usage. Meetings, deadlines, commitments, confirmations and uncertain content always use OpenAI."
+            )
+        }
+    }
+
+    private var localIntelligenceIsActive: Bool {
+        if case .active = app.localIntelligenceStatus { return true }
+        return false
+    }
+
+    private var localIntelligenceStatusDetail: String {
+        switch app.localIntelligenceStatus {
+        case .active:
+            "The exact qualified Apple model is handling only approved low-risk capabilities locally."
+        case .fallback(let reason):
+            switch reason {
+            case .disabled:
+                "The optimization rollout is currently disabled."
+            case .shadowMode:
+                "The Apple model is being compared with OpenAI and does not suppress cloud analysis yet."
+            case .unqualifiedModel:
+                "This Apple model or Iriz prompt version has not been qualified yet."
+            case .appleIntelligenceNotEnabled:
+                "Apple Intelligence is disabled in System Settings."
+            case .modelNotReady:
+                "The Apple model is still downloading or preparing."
+            case .unsupportedLocale:
+                "The selected language is not supported by the local model."
+            case .unsupportedOperatingSystem, .deviceNotEligible, .unavailable:
+                "On-device intelligence is unavailable on this Mac configuration."
+            }
+        }
+    }
+
     @ViewBuilder private var apiKeyActions: some View {
         if settings.apiKeyState.canRemove {
             Button("Remove Key") {
@@ -484,7 +550,6 @@ struct SettingsView: View {
                 apiKey = ""
                 messageIsError = false
                 message = "API key saved securely."
-                Task { await app.retryPending() }
             } catch {
                 messageIsError = true
                 message = error.localizedDescription

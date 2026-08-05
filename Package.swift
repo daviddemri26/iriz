@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "iriz",
     platforms: [
-        .macOS(.v15)
+        .macOS(.v26)
     ],
     products: [
         .executable(name: "iriz", targets: ["Iriz"])
@@ -28,6 +28,7 @@ let package = Package(
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("Security"),
                 .linkedFramework("ServiceManagement"),
+                .linkedFramework("Speech"),
                 .linkedFramework("UserNotifications"),
                 .linkedFramework("Vision"),
                 .linkedFramework("UniformTypeIdentifiers")

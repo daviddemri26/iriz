@@ -6,10 +6,20 @@ import Foundation
 actor SystemAudioCaptureService {
     private var stream: SCStream?
     private var output: SystemAudioOutput?
+    private var lifecycleGeneration = 0
+    private var isStarting = false
 
     func start(handler: @escaping AudioCaptureService.Handler) async throws {
-        guard stream == nil else { return }
+        guard stream == nil, !isStarting else { return }
+        lifecycleGeneration += 1
+        let generation = lifecycleGeneration
+        isStarting = true
+        defer {
+            if lifecycleGeneration == generation { isStarting = false }
+        }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        try Task.checkCancellation()
+        guard lifecycleGeneration == generation else { return }
         guard let display = content.displays.first else { throw SystemAudioCaptureError.noDisplay }
         let excluded = content.applications.filter { $0.bundleIdentifier == Bundle.main.bundleIdentifier }
         let filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
@@ -28,22 +38,37 @@ actor SystemAudioCaptureService {
         let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
         try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: output.queue)
         try await stream.startCapture()
+        guard lifecycleGeneration == generation, !Task.isCancelled else {
+            try? await stream.stopCapture()
+            await output.finish(flushPendingSegment: false)
+            return
+        }
         self.output = output
         self.stream = stream
     }
 
-    func stop() async {
-        guard let stream else { return }
-        try? await stream.stopCapture()
+    func stop(flushPendingSegment: Bool = true) async {
+        lifecycleGeneration += 1
+        isStarting = false
+        let stream = self.stream
+        let output = self.output
         self.stream = nil
-        output?.finish()
-        output = nil
+        self.output = nil
+        guard let stream else {
+            if let output { await output.finish(flushPendingSegment: flushPendingSegment) }
+            return
+        }
+        try? await stream.stopCapture()
+        if let output {
+            await output.finish(flushPendingSegment: flushPendingSegment)
+        }
     }
 }
 
 private final class SystemAudioOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     let queue = DispatchQueue(label: "com.iriz.system-audio", qos: .utility)
     private let lock = NSLock()
+    private let callbackTracker = AsyncCallbackTracker()
     private var segmenter = SpeechSegmenter()
     private let handler: AudioCaptureService.Handler
 
@@ -92,19 +117,27 @@ private final class SystemAudioOutput: NSObject, SCStreamOutput, SCStreamDelegat
         lock.unlock()
         for segment in segments {
             let data = WAVEncoder.encode(segment)
-            Task { await handler(data, segment.voicedDuration) }
+            callbackTracker.submit { [handler] in
+                await handler(data, segment.voicedDuration)
+            }
         }
     }
 
-    func finish() {
-        lock.lock()
-        let segment = segmenter.finish()
-        segmenter.reset()
-        lock.unlock()
+    func finish(flushPendingSegment: Bool = true) async {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume() }
+        }
+        callbackTracker.stopAccepting()
+        let segment = lock.withLock {
+            let pending = flushPendingSegment ? segmenter.finish() : nil
+            segmenter.reset()
+            return pending
+        }
         if let segment {
             let data = WAVEncoder.encode(segment)
-            Task { await handler(data, segment.voicedDuration) }
+            await handler(data, segment.voicedDuration)
         }
+        await callbackTracker.drain(cancel: !flushPendingSegment)
     }
 }
 

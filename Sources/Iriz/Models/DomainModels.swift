@@ -979,6 +979,7 @@ struct PendingAssistantTurn: Identifiable, Equatable, Sendable {
 struct InterpretedObservation: Codable, Sendable {
     var shouldCreateEvent: Bool
     var event: ActivityEvent?
+    var eventIsCommitmentFallback = false
     var commitments: [CommitmentDraft]
     var needsOriginalImage: Bool
     var explanation: String

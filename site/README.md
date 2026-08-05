@@ -53,6 +53,6 @@ Cloudflare Workers Builds uses:
 
 `wrangler.jsonc` owns the production route, disables `workers.dev` and preview URLs, and configures the static-assets binding. Do not recreate a dashboard-only route because the next Wrangler deployment would replace it.
 
-Before public distribution, publish a signed and notarized GitHub Release asset named exactly `iriz.zip`, then verify the Home, Download, Privacy, Support, Press Kit, and 404 routes after deployment.
+Before public distribution, publish a signed and notarized GitHub Release asset named exactly `Iriz.zip`, enable the direct-download control, then verify the Home, Download, Privacy, Support, Press Kit, and 404 routes after deployment.
 
 Do not publish the Privacy Policy as final until the publisher identity, contact method, hosting configuration, OpenAI release setup, and final shipping binary have been reviewed.

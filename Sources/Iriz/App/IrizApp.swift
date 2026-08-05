@@ -51,6 +51,8 @@ final class IrizAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var floatingVisibilityCancellable: AnyCancellable?
     private var floatingBubbleEnabled = SettingsStore.shared.settings.showFloatingBubble
     private var mainWindowPresented = true
+    private var terminationPreparationStarted = false
+    private var terminationPreparationFinished = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -81,6 +83,19 @@ final class IrizAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationPreparationFinished { return .terminateNow }
+        guard !terminationPreparationStarted else { return .terminateLater }
+        terminationPreparationStarted = true
+        Task { @MainActor [weak self, weak sender] in
+            let canTerminate = await AppState.shared.prepareForTermination()
+            self?.terminationPreparationFinished = canTerminate
+            self?.terminationPreparationStarted = false
+            sender?.reply(toApplicationShouldTerminate: canTerminate)
+        }
+        return .terminateLater
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

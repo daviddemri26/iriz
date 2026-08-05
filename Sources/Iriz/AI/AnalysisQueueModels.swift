@@ -103,10 +103,13 @@ struct RefinementJob: Codable, Identifiable, Equatable, Sendable {
 enum AnalysisRetryPolicy {
     static let maximumRateLimitAttempts = 3
     static let maximumTransientAttempts = 2
-    static let maximumFlexAttempts = 3
+    // One initial Flex request plus three deferred retries.
+    static let maximumFlexAttempts = 4
 
     static func delay(afterAttempt attempt: Int, retryAfter: TimeInterval? = nil) -> TimeInterval {
-        if let retryAfter, retryAfter > 0 { return min(retryAfter, 30 * 60) }
+        // Retry-After is authoritative. Retrying earlier than the server asks
+        // can amplify rate-limit failures and waste requests.
+        if let retryAfter, retryAfter > 0 { return retryAfter }
         return switch attempt {
         case ...1: 30
         case 2: 2 * 60

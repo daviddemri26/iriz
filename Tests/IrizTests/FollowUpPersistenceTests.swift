@@ -356,6 +356,82 @@ struct FollowUpPersistenceTests {
         #expect(try await reopened.followUpSubject(id: "roadsight")?.name == "RoadSight")
     }
 
+    @Test("The pre-optimization encrypted schema keeps observations, Journal, Actions, and conversations")
+    func fullLegacyEncryptedDatabaseMigration() async throws {
+        let directory = temporaryDirectory(named: "FullLegacy")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let now = Date()
+        let observation = Observation(
+            source: .screen,
+            capturedAt: now.addingTimeInterval(-60),
+            expiresAt: now.addingTimeInterval(3_600),
+            applicationName: "Legacy Browser",
+            windowTitle: "Migration fixture",
+            text: "Legacy OCR that must survive migration."
+        )
+        let event = ActivityEvent(
+            startedAt: now.addingTimeInterval(-120),
+            endedAt: now.addingTimeInterval(-90),
+            kind: .document,
+            status: .observed,
+            importance: .normal,
+            title: "Legacy Journal event",
+            summary: "Preserve this event across the optimization schema migration.",
+            languageTag: "en-US",
+            confidence: 0.91,
+            createdAt: now.addingTimeInterval(-120),
+            updatedAt: now.addingTimeInterval(-90)
+        )
+        let commitment = Commitment(
+            eventID: event.id,
+            owner: "You",
+            action: "Preserve the legacy Action",
+            contextLabel: "Migration",
+            confidence: 0.88,
+            state: .needsAttention,
+            createdAt: now.addingTimeInterval(-80),
+            updatedAt: now.addingTimeInterval(-80)
+        )
+        let conversation = AssistantConversation(
+            title: "Legacy Ask conversation",
+            answers: [AssistantAnswer(
+                question: "Was the legacy data preserved?",
+                text: "Yes, after a successful migration.",
+                citations: [],
+                createdAt: now.addingTimeInterval(-70)
+            )],
+            createdAt: now.addingTimeInterval(-70),
+            updatedAt: now.addingTimeInterval(-70)
+        )
+        try writeFullLegacyEncryptedDatabase(
+            directory: directory,
+            observation: observation,
+            event: event,
+            commitment: commitment,
+            conversation: conversation
+        )
+
+        do {
+            let migrated = try EncryptedSQLiteStore(directory: directory, keyData: keyData)
+            #expect(try await migrated.observation(id: observation.id)?.text == observation.text)
+            #expect(try await migrated.event(id: event.id)?.title == event.title)
+            #expect(try await migrated.event(id: event.id)?.summary == event.summary)
+            #expect(try await migrated.commitments(includingClosed: true).contains { $0.id == commitment.id })
+            #expect(try await migrated.assistantConversations(limit: 10).first?.id == conversation.id)
+        }
+
+        // Schema additions are persisted by initialization itself, even before
+        // an application-level write occurs.
+        let reopened = try EncryptedSQLiteStore(directory: directory, keyData: keyData)
+        #expect(try await reopened.observation(id: observation.id)?.text == observation.text)
+        #expect(try await reopened.event(id: event.id)?.title == event.title)
+        #expect(try await reopened.commitments(includingClosed: true).contains { $0.id == commitment.id })
+        #expect(try await reopened.assistantConversations(limit: 10).first?.title == conversation.title)
+        let jobs = try await reopened.claimAnalysisJobs(limit: 10, now: now)
+        #expect(jobs.map(\.observationID) == [observation.id])
+    }
+
     private func temporaryDirectory(named suffix: String) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("IrizFollowUpPersistence-\(suffix)-\(UUID())", isDirectory: true)
@@ -499,11 +575,218 @@ struct FollowUpPersistenceTests {
             plaintext,
             authenticating: Data("IrizSQLiteV1".utf8)
         )
-        try encrypted.write(
-            to: directory.appendingPathComponent("Iriz.sqlite.iriz"),
-            options: [.atomic, .completeFileProtection]
+        try EncryptedFileWriter.write(
+            encrypted,
+            to: directory.appendingPathComponent("Iriz.sqlite.iriz")
         )
         try FileManager.default.removeItem(at: plaintextURL)
+    }
+
+    private func writeFullLegacyEncryptedDatabase(
+        directory: URL,
+        observation: Observation,
+        event: ActivityEvent,
+        commitment: Commitment,
+        conversation: AssistantConversation
+    ) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let plaintextURL = directory.appendingPathComponent("legacy-full.sqlite")
+        var database: OpaquePointer?
+        let openCode = sqlite3_open_v2(
+            plaintextURL.path,
+            &database,
+            SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard openCode == SQLITE_OK, let database else {
+            if let database { sqlite3_close(database) }
+            throw SQLiteStoreError.openFailed("Unable to create full legacy fixture")
+        }
+        var shouldCloseDatabase = true
+        defer {
+            if shouldCloseDatabase { sqlite3_close(database) }
+        }
+
+        try executeLegacySQL(
+            """
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE events (
+                id TEXT PRIMARY KEY NOT NULL,
+                started_at REAL NOT NULL,
+                ended_at REAL NOT NULL,
+                importance INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                language TEXT NOT NULL,
+                payload BLOB NOT NULL
+            );
+            CREATE VIRTUAL TABLE event_fts USING fts5(
+                id UNINDEXED, title, summary, details, entities, urls, applications,
+                tokenize = 'unicode61 remove_diacritics 2'
+            );
+            CREATE TABLE observations (
+                id TEXT PRIMARY KEY NOT NULL,
+                captured_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                source TEXT NOT NULL,
+                processed_at REAL,
+                payload BLOB NOT NULL
+            );
+            CREATE TABLE commitments (
+                id TEXT PRIMARY KEY NOT NULL,
+                event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                state TEXT NOT NULL,
+                review_at REAL,
+                confidence REAL NOT NULL,
+                payload BLOB NOT NULL
+            );
+            CREATE TABLE assistant_conversations (
+                id TEXT PRIMARY KEY NOT NULL,
+                updated_at REAL NOT NULL,
+                payload BLOB NOT NULL
+            );
+            """,
+            on: database
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        encoder.outputFormatting = [.sortedKeys]
+        try insertLegacyRow(
+            "INSERT INTO events (id, started_at, ended_at, importance, status, kind, language, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            values: [
+                .text(event.id.uuidString),
+                .double(event.startedAt.timeIntervalSince1970),
+                .double(event.endedAt.timeIntervalSince1970),
+                .integer(Int64(event.importance.rawValue)),
+                .text(event.status.rawValue),
+                .text(event.kind.rawValue),
+                .text(event.languageTag),
+                .blob(try encoder.encode(event))
+            ],
+            on: database
+        )
+        try insertLegacyRow(
+            "INSERT INTO event_fts (id, title, summary, details, entities, urls, applications) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            values: [
+                .text(event.id.uuidString), .text(event.title), .text(event.summary), .text(event.details),
+                .text(event.entities.joined(separator: " ")),
+                .text(event.urls.map(\.absoluteString).joined(separator: " ")),
+                .text(event.sourceApplications.joined(separator: " "))
+            ],
+            on: database
+        )
+        try insertLegacyRow(
+            "INSERT INTO observations (id, captured_at, expires_at, source, processed_at, payload) VALUES (?, ?, ?, ?, ?, ?)",
+            values: [
+                .text(observation.id.uuidString),
+                .double(observation.capturedAt.timeIntervalSince1970),
+                .double(observation.expiresAt.timeIntervalSince1970),
+                .text(observation.source.rawValue),
+                .null,
+                .blob(try encoder.encode(observation))
+            ],
+            on: database
+        )
+        try insertLegacyRow(
+            "INSERT INTO commitments (id, event_id, state, review_at, confidence, payload) VALUES (?, ?, ?, ?, ?, ?)",
+            values: [
+                .text(commitment.id.uuidString),
+                .text(commitment.eventID.uuidString),
+                .text(commitment.state.rawValue),
+                .null,
+                .double(commitment.confidence),
+                .blob(try legacyPayload(for: commitment))
+            ],
+            on: database
+        )
+        try insertLegacyRow(
+            "INSERT INTO assistant_conversations (id, updated_at, payload) VALUES (?, ?, ?)",
+            values: [
+                .text(conversation.id.uuidString),
+                .double(conversation.updatedAt.timeIntervalSince1970),
+                .blob(try encoder.encode(conversation))
+            ],
+            on: database
+        )
+
+        let closeCode = sqlite3_close(database)
+        guard closeCode == SQLITE_OK else {
+            throw SQLiteStoreError.sqlite(
+                code: closeCode,
+                message: String(cString: sqlite3_errmsg(database)),
+                sql: "close full legacy fixture"
+            )
+        }
+        shouldCloseDatabase = false
+
+        let plaintext = try Data(contentsOf: plaintextURL)
+        let encrypted = try CryptoBox(keyData: keyData).seal(
+            plaintext,
+            authenticating: Data("IrizSQLiteV1".utf8)
+        )
+        try EncryptedFileWriter.write(
+            encrypted,
+            to: directory.appendingPathComponent("Iriz.sqlite.iriz")
+        )
+        try FileManager.default.removeItem(at: plaintextURL)
+    }
+
+    private enum LegacyBoundValue {
+        case text(String)
+        case integer(Int64)
+        case double(Double)
+        case blob(Data)
+        case null
+    }
+
+    private func insertLegacyRow(
+        _ sql: String,
+        values: [LegacyBoundValue],
+        on database: OpaquePointer
+    ) throws {
+        var statement: OpaquePointer?
+        let prepareCode = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+        guard prepareCode == SQLITE_OK, let statement else {
+            throw SQLiteStoreError.sqlite(
+                code: prepareCode,
+                message: String(cString: sqlite3_errmsg(database)),
+                sql: sql
+            )
+        }
+        defer { sqlite3_finalize(statement) }
+        for (offset, value) in values.enumerated() {
+            let index = Int32(offset + 1)
+            let code: Int32 = switch value {
+            case .text(let string):
+                string.withCString { sqlite3_bind_text(statement, index, $0, -1, sqliteTransient) }
+            case .integer(let integer):
+                sqlite3_bind_int64(statement, index, integer)
+            case .double(let double):
+                sqlite3_bind_double(statement, index, double)
+            case .blob(let data):
+                data.withUnsafeBytes { bytes in
+                    sqlite3_bind_blob(statement, index, bytes.baseAddress, Int32(bytes.count), sqliteTransient)
+                }
+            case .null:
+                sqlite3_bind_null(statement, index)
+            }
+            guard code == SQLITE_OK else {
+                throw SQLiteStoreError.sqlite(
+                    code: code,
+                    message: String(cString: sqlite3_errmsg(database)),
+                    sql: sql
+                )
+            }
+        }
+        let stepCode = sqlite3_step(statement)
+        guard stepCode == SQLITE_DONE else {
+            throw SQLiteStoreError.sqlite(
+                code: stepCode,
+                message: String(cString: sqlite3_errmsg(database)),
+                sql: sql
+            )
+        }
     }
 
     private func executeLegacySQL(_ sql: String, on database: OpaquePointer) throws {

@@ -2,7 +2,6 @@ import Foundation
 import Testing
 @testable import Iriz
 
-@available(macOS 26.0, *)
 private actor LocalGateProviderStub: LocalGateModelProviding {
     enum StubError: Error {
         case generationFailed
@@ -13,24 +12,40 @@ private actor LocalGateProviderStub: LocalGateModelProviding {
         let prewarmCalls: Int
         let classifyCalls: Int
         let prompts: [String]
+        let draftCalls: Int
+        let draftPrompts: [String]
     }
 
     private let environmentValue: LocalGateModelEnvironment
     private var verdicts: [LocalGateVerdict]
     private let shouldThrow: Bool
+    private var drafts: [LocalEventDraft]
+    private let draftShouldThrow: Bool
+    private let classificationDelay: Duration
+    private let draftDelay: Duration
     private var environmentCalls = 0
     private var prewarmCalls = 0
     private var classifyCalls = 0
     private var prompts: [String] = []
+    private var draftCalls = 0
+    private var draftPrompts: [String] = []
 
     init(
         environment: LocalGateModelEnvironment,
         verdicts: [LocalGateVerdict] = [.uncertain],
-        shouldThrow: Bool = false
+        shouldThrow: Bool = false,
+        drafts: [LocalEventDraft] = [],
+        draftShouldThrow: Bool = false,
+        classificationDelay: Duration = .zero,
+        draftDelay: Duration = .zero
     ) {
         self.environmentValue = environment
         self.verdicts = verdicts
         self.shouldThrow = shouldThrow
+        self.drafts = drafts
+        self.draftShouldThrow = draftShouldThrow
+        self.classificationDelay = classificationDelay
+        self.draftDelay = draftDelay
     }
 
     func environment(localeIdentifier: String) -> LocalGateModelEnvironment {
@@ -42,9 +57,12 @@ private actor LocalGateProviderStub: LocalGateModelProviding {
         prewarmCalls += 1
     }
 
-    func classify(prompt: String) throws -> LocalGateVerdict {
+    func classify(prompt: String) async throws -> LocalGateVerdict {
         classifyCalls += 1
         prompts.append(prompt)
+        if classificationDelay > .zero {
+            try await Task.sleep(for: classificationDelay)
+        }
         if shouldThrow {
             throw StubError.generationFailed
         }
@@ -54,12 +72,29 @@ private actor LocalGateProviderStub: LocalGateModelProviding {
         return verdicts[0]
     }
 
+    func draftEvent(prompt: String) async throws -> LocalEventDraft {
+        draftCalls += 1
+        draftPrompts.append(prompt)
+        if draftDelay > .zero {
+            try await Task.sleep(for: draftDelay)
+        }
+        if draftShouldThrow || drafts.isEmpty {
+            throw StubError.generationFailed
+        }
+        if drafts.count > 1 {
+            return drafts.removeFirst()
+        }
+        return drafts[0]
+    }
+
     func snapshot() -> Snapshot {
         Snapshot(
             environmentCalls: environmentCalls,
             prewarmCalls: prewarmCalls,
             classifyCalls: classifyCalls,
-            prompts: prompts
+            prompts: prompts,
+            draftCalls: draftCalls,
+            draftPrompts: draftPrompts
         )
     }
 }
@@ -85,7 +120,6 @@ private final class LockedTestClock: @unchecked Sendable {
     }
 }
 
-@available(macOS 26.0, *)
 @Suite("Apple Foundation Model gate")
 struct AppleFoundationModelGateTests {
     @Test("A qualified clearly-empty verdict is the only verdict that suppresses cloud analysis")
@@ -130,6 +164,206 @@ struct AppleFoundationModelGateTests {
         #expect(decision.reason == .shadowMode)
         #expect(await provider.snapshot().classifyCalls == 1)
         #expect(await gate.status(languageTag: "en-US", mode: .shadow) == .fallback(.shadowMode))
+    }
+
+    @Test("A qualified local event draft replaces cloud only after strict validation")
+    func qualifiedLocalEventDraft() async {
+        let fingerprint = Self.fingerprint()
+        let draft = LocalEventDraft(
+            kind: .research,
+            title: "  Rendering architecture research  ",
+            summary: "  Technical documentation is being explored.  "
+        )
+        let provider = LocalGateProviderStub(
+            environment: .init(availability: .available, fingerprint: fingerprint),
+            verdicts: [.meaningful],
+            drafts: [draft]
+        )
+        let gate = AppleFoundationModelGate(
+            provider: provider,
+            registry: Self.qualifiedRegistry(
+                fingerprint: fingerprint,
+                localEventDraftEnabled: true
+            ),
+            cacheTTL: 0
+        )
+
+        let decision = await gate.route(
+            Self.safeInput(text: "Technical documentation about rendering architecture"),
+            mode: .adaptive
+        )
+
+        #expect(decision.route == .suppressCloud)
+        #expect(decision.verdict == .meaningful)
+        #expect(decision.localEventDraftAttempt.outcome == .generated)
+        #expect(decision.localEventDraftAttempt.draft?.kind == .research)
+        #expect(decision.localEventDraftAttempt.draft?.title == "Rendering architecture research")
+        let snapshot = await provider.snapshot()
+        #expect(snapshot.classifyCalls == 1)
+        #expect(snapshot.draftCalls == 1)
+        #expect(snapshot.draftPrompts.first?.contains("CONTENT:\nTechnical documentation") == true)
+    }
+
+    @Test("Gate qualification latency excludes local event draft generation")
+    func gateLatencyExcludesDraftGeneration() async {
+        let fingerprint = Self.fingerprint()
+        let provider = LocalGateProviderStub(
+            environment: .init(availability: .available, fingerprint: fingerprint),
+            verdicts: [.meaningful],
+            drafts: [.init(
+                kind: .research,
+                title: "Rendering research",
+                summary: "Rendering documentation is being reviewed."
+            )],
+            draftDelay: .milliseconds(80)
+        )
+        let gate = AppleFoundationModelGate(
+            provider: provider,
+            registry: Self.qualifiedRegistry(
+                fingerprint: fingerprint,
+                localEventDraftEnabled: true
+            ),
+            cacheTTL: 0
+        )
+
+        let decision = await gate.route(
+            Self.safeInput(text: "Technical documentation about rendering architecture"),
+            mode: .shadow
+        )
+
+        #expect(decision.classificationLatencyMilliseconds != nil)
+        #expect(decision.localEventDraftAttempt.latencyMilliseconds != nil)
+        #expect(
+            (decision.classificationLatencyMilliseconds ?? .max)
+                < (decision.localEventDraftAttempt.latencyMilliseconds ?? 0)
+        )
+        #expect((decision.localEventDraftAttempt.latencyMilliseconds ?? 0) >= 60)
+    }
+
+    @Test("Adaptive local events stay disabled without the exact capability profile")
+    func unqualifiedLocalEventUsesCloud() async {
+        let fingerprint = Self.fingerprint()
+        let provider = LocalGateProviderStub(
+            environment: .init(availability: .available, fingerprint: fingerprint),
+            verdicts: [.meaningful],
+            drafts: [.init(
+                kind: .document,
+                title: "Architecture document",
+                summary: "A technical architecture document is open."
+            )]
+        )
+        let gate = AppleFoundationModelGate(
+            provider: provider,
+            registry: Self.qualifiedRegistry(fingerprint: fingerprint),
+            cacheTTL: 0
+        )
+
+        let decision = await gate.route(
+            Self.safeInput(text: "Technical architecture document overview"),
+            mode: .adaptive
+        )
+
+        #expect(decision.route == .useCloud)
+        #expect(decision.localEventDraftAttempt.outcome == .unqualifiedModel)
+        #expect(decision.localEventDraftAttempt.draft == nil)
+        #expect(await provider.snapshot().draftCalls == 0)
+    }
+
+    @Test("Forbidden or failed local drafts always fall back to Luna")
+    func invalidLocalEventUsesCloud() async {
+        let fingerprint = Self.fingerprint()
+        let invalidProvider = LocalGateProviderStub(
+            environment: .init(availability: .available, fingerprint: fingerprint),
+            verdicts: [.meaningful],
+            drafts: [.init(
+                kind: .note,
+                title: "Next action",
+                summary: "The task should be completed."
+            )]
+        )
+        let failingProvider = LocalGateProviderStub(
+            environment: .init(availability: .available, fingerprint: fingerprint),
+            verdicts: [.meaningful],
+            draftShouldThrow: true
+        )
+        let registry = Self.qualifiedRegistry(
+            fingerprint: fingerprint,
+            localEventDraftEnabled: true
+        )
+
+        let invalid = await AppleFoundationModelGate(
+            provider: invalidProvider,
+            registry: registry,
+            cacheTTL: 0
+        ).route(Self.safeInput(text: "Neutral workspace overview content"), mode: .adaptive)
+        let failed = await AppleFoundationModelGate(
+            provider: failingProvider,
+            registry: registry,
+            cacheTTL: 0
+        ).route(Self.safeInput(text: "Neutral research workspace content"), mode: .adaptive)
+
+        #expect(invalid.route == .useCloud)
+        #expect(invalid.localEventDraftAttempt.outcome == .rejectedOutput)
+        #expect(failed.route == .useCloud)
+        #expect(failed.localEventDraftAttempt.outcome == .generationFailed)
+    }
+
+    @Test("Local-event qualification rejects a safe but semantically unrelated draft")
+    func localEventSemanticAgreement() {
+        let draft = LocalEventDraft(
+            kind: .research,
+            title: "Rendering architecture research",
+            summary: "Technical rendering documentation is being explored."
+        )
+        let matching = ActivityEvent(
+            startedAt: Date(),
+            endedAt: Date(),
+            kind: .research,
+            status: .observed,
+            importance: .normal,
+            title: "Rendering architecture",
+            summary: "Exploring technical rendering documentation.",
+            confidence: 0.9
+        )
+        let unrelated = ActivityEvent(
+            startedAt: Date(),
+            endedAt: Date(),
+            kind: .research,
+            status: .observed,
+            importance: .normal,
+            title: "Supplier market research",
+            summary: "Comparing catering suppliers and delivery options.",
+            confidence: 0.9
+        )
+
+        #expect(LocalEventSemanticAgreement.isCompatible(draft, with: matching))
+        #expect(!LocalEventSemanticAgreement.isCompatible(draft, with: unrelated))
+    }
+
+    @Test("Shadow records a distinct local draft attempt but never suppresses OpenAI")
+    func shadowLocalEventQualification() async {
+        let fingerprint = Self.fingerprint()
+        let provider = LocalGateProviderStub(
+            environment: .init(availability: .available, fingerprint: fingerprint),
+            verdicts: [.meaningful],
+            drafts: [.init(
+                kind: .document,
+                title: "Rendering reference",
+                summary: "A rendering reference document is open."
+            )]
+        )
+        let gate = AppleFoundationModelGate(provider: provider, registry: .production, cacheTTL: 0)
+
+        let decision = await gate.route(
+            Self.safeInput(text: "Rendering reference document and implementation notes"),
+            mode: .shadow
+        )
+
+        #expect(decision.route == .useCloud)
+        #expect(decision.reason == .shadowMode)
+        #expect(decision.localEventDraftAttempt.outcome == .generated)
+        #expect(decision.localEventDraftAttempt.draft?.kind == .document)
+        #expect(await provider.snapshot().draftCalls == 1)
     }
 
     @Test("Adaptive mode fails open before inference for an unknown model fingerprint")
@@ -278,7 +512,7 @@ struct AppleFoundationModelGateTests {
             provider: provider,
             registry: Self.qualifiedRegistry(fingerprint: fingerprint),
             cacheTTL: 60,
-            now: clock.now
+            now: { clock.now() }
         )
 
         let first = await gate.route(Self.safeInput(text: "Settings appearance preferences panel"), mode: .adaptive)
@@ -368,6 +602,7 @@ struct AppleFoundationModelGateTests {
         )
 
         #expect(event.kind == .research)
+        #expect(event.id == observation.id)
         #expect(event.status == .observed)
         #expect(event.importance == .normal)
         #expect(event.title == "Rendering architecture research")
@@ -385,7 +620,10 @@ struct AppleFoundationModelGateTests {
             (.init(kind: .note, title: "Neutral note", summary: String(repeating: "a", count: 241)), .summaryTooLong),
             (.init(kind: .note, title: "Task completed", summary: "The work is done."), .highRiskContent),
             (.init(kind: .research, title: "Friday review", summary: "Research notes were reviewed."), .highRiskContent),
-            (.init(kind: .document, title: "Invoice document", summary: "A $42 receipt was visible."), .highRiskContent)
+            (.init(kind: .document, title: "Invoice document", summary: "A $42 receipt was visible."), .highRiskContent),
+            (.init(kind: .note, title: "Next action", summary: "A neutral workspace note."), .highRiskContent),
+            (.init(kind: .context, title: "Team meeting", summary: "A discussion is visible."), .highRiskContent),
+            (.init(kind: .research, title: "Research plan", summary: "The author intends to continue."), .highRiskContent)
         ]
 
         for (draft, expectedError) in cases {
@@ -424,11 +662,43 @@ struct AppleFoundationModelGateTests {
             promptVersion: "local-gate-v2",
             schemaVersion: qualified.schemaVersion
         )
+        let newLocalEventPromptVersion = AppleModelFingerprint(
+            operatingSystemMajor: qualified.operatingSystemMajor,
+            operatingSystemMinor: qualified.operatingSystemMinor,
+            localeIdentifier: qualified.localeIdentifier,
+            promptVersion: qualified.promptVersion,
+            schemaVersion: qualified.schemaVersion,
+            localEventPromptVersion: "local-event-v2",
+            localEventSchemaVersion: qualified.localEventSchemaVersion
+        )
 
         #expect(registry.profile(for: qualified) == profile)
         #expect(registry.profile(for: newOSVersion) == nil)
         #expect(registry.profile(for: newPromptVersion) == nil)
+        #expect(registry.profile(for: newLocalEventPromptVersion) == nil)
         #expect(AppleQualificationRegistry.production.profile(for: qualified) == nil)
+    }
+
+    @Test("Legacy fingerprints without local-event versions fail closed")
+    func legacyFingerprintFailsClosed() throws {
+        let qualified = Self.fingerprint()
+        var object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(qualified)) as? [String: Any]
+        )
+        object.removeValue(forKey: "localEventPromptVersion")
+        object.removeValue(forKey: "localEventSchemaVersion")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let legacy = try JSONDecoder().decode(AppleModelFingerprint.self, from: legacyData)
+        let registry = AppleQualificationRegistry(profiles: [AppleQualificationProfile(
+            fingerprint: qualified,
+            gateEnabled: true,
+            localEventDraftEnabled: true,
+            qualifiedAt: Date(timeIntervalSince1970: 1_000)
+        )])
+
+        #expect(legacy.localEventPromptVersion == "legacy-unversioned")
+        #expect(legacy.localEventSchemaVersion == "legacy-unversioned")
+        #expect(registry.profile(for: legacy) == nil)
     }
 
     private static func fingerprint() -> AppleModelFingerprint {
@@ -441,13 +711,16 @@ struct AppleFoundationModelGateTests {
         )
     }
 
-    private static func qualifiedRegistry(fingerprint: AppleModelFingerprint) -> AppleQualificationRegistry {
+    private static func qualifiedRegistry(
+        fingerprint: AppleModelFingerprint,
+        localEventDraftEnabled: Bool = false
+    ) -> AppleQualificationRegistry {
         AppleQualificationRegistry(
             profiles: [
                 AppleQualificationProfile(
                     fingerprint: fingerprint,
                     gateEnabled: true,
-                    localEventDraftEnabled: false,
+                    localEventDraftEnabled: localEventDraftEnabled,
                     qualifiedAt: Date(timeIntervalSince1970: 1_000)
                 )
             ]

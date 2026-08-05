@@ -22,6 +22,12 @@ enum SecureStorageState: Equatable, Sendable {
 final class AppState: ObservableObject {
     static let shared = AppState()
 
+    private struct PendingOpenAIBlockPersistence: Sendable {
+        let errorKind: AnalysisErrorKind
+        let errorMessage: String
+        let occurredAt: Date
+    }
+
     @Published var selectedSection: MainSection = .initial
     @Published var selectedSettingsCategory: SettingsCategory = .capture
     @Published private(set) var events: [ActivityEvent] = []
@@ -45,6 +51,7 @@ final class AppState: ObservableObject {
     @Published private(set) var secureStorageState: SecureStorageState = .checking
     @Published private(set) var followUpOperationMessage: String?
     @Published private(set) var pendingFollowUpMergeConfirmation: PendingFollowUpMergeConfirmation?
+    @Published private(set) var localIntelligenceStatus: LocalIntelligenceStatus = .fallback(.unavailable)
 
     let settingsStore = SettingsStore.shared
     private var repository: EncryptedSQLiteStore?
@@ -52,30 +59,79 @@ final class AppState: ObservableObject {
     private var searchService: LocalSearchService?
     let indicatorActivities: IndicatorActivityStore
     private let ai: any AIProviding
+    private let usageRecorder: PersistentOpenAIUsageRecorder
+    private let optimizationRecorder: PersistentOptimizationTelemetryRecorder
+    private let localGate: AppleFoundationModelGate
+    private let localSpeechAnalyzer: LocalSpeechAnalyzerQualificationHarness
     private let screenCapture = ScreenCaptureService()
     private let screenBatcher = ScreenObservationBatcher()
+    private let ocr = VisionOCRService()
+    private let audioTranscriptBatcher = AudioTranscriptBatcher()
+    private let analysisMutationGate = AsyncOperationGate()
+    private let screenVisibilityGate = AsyncOperationGate()
     private let audioCapture = AudioCaptureService()
     private let systemAudioCapture = SystemAudioCaptureService()
     private let notifications = NotificationService()
     private let followUpExporter = FollowUpExportService()
+    private var bootstrapTask: Task<Void, Never>?
     private var maintenanceTask: Task<Void, Never>?
+    private var audioConfigurationTask: Task<Void, Never>?
+    private var audioConfigurationGeneration: UUID?
+    private var privacyCleanupTask: Task<Void, Never>?
+    private var openAIBlockPersistenceTasks: [UUID: Task<Void, Never>] = [:]
+    private var pendingOpenAIBlockPersistence: [UUID: PendingOpenAIBlockPersistence] = [:]
     private var lastScreenJPEG: Data?
     private var lastScreenContext: ActiveContext?
+    private var lastMeetingEndedAt: Date?
+    private var screenContextVisibility: ScreenContextVisibility = .unavailable
     private var screenCaptureFailureMessage: String?
     private var audioCaptureFailureMessage: String?
     private var isComposingNewAssistantConversation = false
     private var indicatorSnapshotCancellable: AnyCancellable?
     private var apiKeyStateCancellable: AnyCancellable?
-    private var isDrainingAnalysisQueue = false
+    private var intelligenceSettingsCancellable: AnyCancellable?
+    private var isDrainingScreenAnalysisQueue = false
+    private var isDrainingAudioAnalysisQueue = false
     private var isDrainingRefinementQueue = false
+    private var screenAnalysisDrainRequested = false
+    private var audioAnalysisDrainRequested = false
+    private var refinementDrainRequested = false
+    private var activeScreenAnalysisTask: Task<Void, Never>?
+    private var activeAudioAnalysisTask: Task<Void, Never>?
+    private var activeRefinementTask: Task<Void, Never>?
+    private var activeInteractiveWorkflowCount = 0
+    private var interactiveWorkflowWaiters: [CheckedContinuation<Void, Never>] = []
+    private var capturePrivacyBoundary = CapturePrivacyBoundary()
+    private let captureCommitFence = CaptureCommitFence()
+    /// Set by any 401/403/project-spend failure and restored from the durable
+    /// queues on launch. Only an explicit key validation resumes cloud work.
+    private var isOpenAIWorkBlocked = false
+    private var isPreparingForTermination = false
+    private var hasQuiescedForTermination = false
 
     init(
         ai: (any AIProviding)? = nil,
         indicatorActivities: IndicatorActivityStore? = nil
     ) {
         let activityStore = indicatorActivities ?? IndicatorActivityStore()
+        let usageRecorder = PersistentOpenAIUsageRecorder()
+        let optimizationRecorder = PersistentOptimizationTelemetryRecorder()
         self.indicatorActivities = activityStore
-        self.ai = ai ?? OpenAIClient(indicatorActivities: activityStore)
+        self.usageRecorder = usageRecorder
+        self.optimizationRecorder = optimizationRecorder
+        self.localGate = AppleFoundationModelGate(telemetryHandler: { record in
+            await optimizationRecorder.record(record)
+        }, localEventDraftPolicy: OptimizationRuntimePolicy.localEventDraftPolicy)
+        self.localSpeechAnalyzer = LocalSpeechAnalyzerQualificationHarness(
+            configuration: LocalSpeechAnalyzerHarnessConfiguration(
+                isEnabled: OptimizationRuntimePolicy.localSpeechEnabled
+                    && !SpeechAnalyzerQualificationRegistry.embeddedApprovedProfiles.isEmpty,
+                allowedLanguageCodes: ["en", "fr"],
+                requiresApprovedProfile: true,
+                approvedProfiles: SpeechAnalyzerQualificationRegistry.embeddedApprovedProfiles
+            )
+        )
+        self.ai = ai ?? OpenAIClient(indicatorActivities: activityStore, usageRecorder: usageRecorder)
         self.repository = nil
         self.mediaStore = nil
         self.searchService = nil
@@ -90,6 +146,13 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 self.captureHealth = self.configuredCaptureHealth
             }
+        self.intelligenceSettingsCancellable = settingsStore.$settings
+            .map { "\($0.outputLanguageTag)|\($0.optimizationPhase.rawValue)" }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { await self?.refreshLocalIntelligenceStatus(prewarm: true) }
+            }
 
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.sessionDidResignActiveNotification,
@@ -99,17 +162,30 @@ final class AppState: ObservableObject {
             Task { @MainActor in AppState.shared.pause() }
         }
 
-        Task { [weak self] in
+        bootstrapTask = Task { [weak self] in
             await self?.bootstrap()
         }
     }
 
     deinit {
+        bootstrapTask?.cancel()
         maintenanceTask?.cancel()
-        audioCapture.stop()
+        audioConfigurationTask?.cancel()
+        privacyCleanupTask?.cancel()
+        openAIBlockPersistenceTasks.values.forEach { $0.cancel() }
+        audioCapture.stop(flushPendingSegment: false)
+        let recorder = usageRecorder
+        let optimizationRecorder = optimizationRecorder
+        let audioTranscriptBatcher = audioTranscriptBatcher
+        Task {
+            await audioTranscriptBatcher.cancelAndDrain()
+            await recorder.flush()
+            await optimizationRecorder.flush()
+        }
     }
 
     func bootstrap() async {
+        guard !Task.isCancelled, !isPreparingForTermination else { return }
         if DistributionEnvironment.requiresExplicitKeychainUnlock {
             // Ad hoc builds have no stable designated requirement. macOS can therefore
             // challenge every rebuilt binary for each legacy Keychain item. Never let a
@@ -121,10 +197,26 @@ final class AppState: ObservableObject {
         } else {
             await initializeSecureStorage(interaction: .nonInteractive)
         }
+        guard !Task.isCancelled, !isPreparingForTermination else { return }
         await refresh()
+        guard !Task.isCancelled, !isPreparingForTermination else { return }
         await cleanup()
-        await screenBatcher.start { @Sendable batch in
-            await AppState.shared.processScreenBatch(batch)
+        guard !Task.isCancelled, !isPreparingForTermination else { return }
+        await refreshLocalIntelligenceStatus(prewarm: true)
+        guard !Task.isCancelled, !isPreparingForTermination else { return }
+        await screenBatcher.start(
+            telemetryHandler: { [optimizationRecorder = self.optimizationRecorder] record in
+                await optimizationRecorder.record(record)
+            },
+            handler: { @Sendable batch in await AppState.shared.processScreenBatch(batch) }
+        )
+        await audioTranscriptBatcher.start { @Sendable batch in
+            await AppState.shared.processAudioTranscriptBatch(batch)
+        }
+        guard !Task.isCancelled, !isPreparingForTermination else {
+            await screenBatcher.cancelAndDrain()
+            _ = await audioTranscriptBatcher.cancelAndDrain()
+            return
         }
         await screenCapture.start(
             settingsProvider: { @Sendable in
@@ -136,10 +228,19 @@ final class AppState: ObservableObject {
             failureHandler: { @Sendable message in
                 await AppState.shared.updateScreenCaptureFailure(message)
             },
+            telemetryHandler: { [optimizationRecorder = self.optimizationRecorder] record in
+                await optimizationRecorder.record(record)
+            },
             handler: { @Sendable frame in
                 await AppState.shared.processScreenFrame(frame)
             }
         )
+        guard !Task.isCancelled, !isPreparingForTermination else {
+            await screenCapture.stop()
+            await screenBatcher.cancelAndDrain()
+            _ = await audioTranscriptBatcher.cancelAndDrain()
+            return
+        }
         configureAudio()
         maintenanceTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -147,6 +248,11 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 await self.maintenanceTick()
             }
+        }
+        if secureStorageState == .ready,
+           !settingsStore.settings.isPaused,
+           !isOpenAIWorkBlocked {
+            await retryPending()
         }
     }
 
@@ -171,6 +277,9 @@ final class AppState: ObservableObject {
             repository = stores.0
             mediaStore = stores.1
             searchService = LocalSearchService(repository: stores.0)
+            await usageRecorder.attach(repository: stores.0)
+            await optimizationRecorder.attach(repository: stores.0)
+            isOpenAIWorkBlocked = try await stores.0.hasCredentialBlockedOpenAIJobs()
             secureStorageState = .ready
             storageError = nil
         } catch {
@@ -206,6 +315,10 @@ final class AppState: ObservableObject {
                 return (apiKey, voiceReference)
             }.value
             settingsStore.installKeychainCache(apiKey: credentials.0, voiceReference: credentials.1)
+            if isOpenAIWorkBlocked {
+                settingsStore.setAPIKeyState(.invalid(Self.restoredOpenAIBlockMessage))
+                captureHealth = .error(Self.restoredOpenAIBlockMessage)
+            }
         } catch {
             if let keychainError = error as? KeychainStoreError, keychainError.requiresUserApproval {
                 settingsStore.setAPIKeyState(.needsApproval)
@@ -365,6 +478,7 @@ final class AppState: ObservableObject {
     }
 
     func setPaused(_ paused: Bool) {
+        let wasPaused = settingsStore.settings.isPaused
         if !paused,
            !settingsStore.settings.screenCaptureEnabled,
            settingsStore.settings.audioMode == .off {
@@ -372,14 +486,26 @@ final class AppState: ObservableObject {
         }
         settingsStore.settings.isPaused = paused
         if paused {
-            audioCapture.stop()
-            Task {
-                await screenBatcher.cancel()
-                await systemAudioCapture.stop()
+            if !wasPaused {
+                capturePrivacyBoundary.invalidate()
+                captureCommitFence.invalidate([.screen, .audio])
             }
+            if isEnrollingVoice {
+                isEnrollingVoice = false
+                voiceEnrollmentMessage = "Voice enrollment was cancelled while Iriz was paused."
+            }
+            audioCapture.stop(flushPendingSegment: false)
+            schedulePrivacyCleanup()
         } else {
             guard secureStorageState == .ready else {
                 captureHealth = .permissionNeeded("Keychain access")
+                return
+            }
+            // The cleanup task owns producer restart and queue retry. Starting a
+            // new microphone callback before its final purge could mix content
+            // from opposite sides of the pause boundary.
+            guard privacyCleanupTask == nil else {
+                captureHealth = configuredCaptureHealth
                 return
             }
             configureAudio()
@@ -463,58 +589,209 @@ final class AppState: ObservableObject {
     }
 
     func configureAudio() {
+        guard AudioCaptureAdmissionPolicy.allowsCapture(
+            isPreparingForTermination: isPreparingForTermination,
+            isPaused: settingsStore.settings.isPaused,
+            screenVisibility: screenContextVisibility,
+            privacyCleanupInProgress: privacyCleanupTask != nil
+        ) else {
+            // Fail closed across private/pause/termination boundaries. This guard
+            // is evaluated synchronously on MainActor before any new microphone
+            // callback can be installed by a concurrent settings change.
+            audioCapture.stop(flushPendingSegment: false)
+            scheduleAudioConfigurationWork { app in
+                await app.systemAudioCapture.stop(flushPendingSegment: false)
+            }
+            return
+        }
         guard secureStorageState == .ready else {
-            audioCapture.stop()
-            Task { await systemAudioCapture.stop() }
+            audioCapture.stop(flushPendingSegment: false)
+            scheduleAudioConfigurationWork { app in
+                await app.systemAudioCapture.stop(flushPendingSegment: false)
+            }
             captureHealth = configuredCaptureHealth
             return
         }
         guard settingsStore.settings.isAudioActiveNow else {
-            audioCapture.stop()
-            Task { await systemAudioCapture.stop() }
+            audioCapture.stop(flushPendingSegment: false)
+            scheduleAudioConfigurationWork { app in
+                await app.systemAudioCapture.stop(flushPendingSegment: false)
+            }
             audioCaptureFailureMessage = nil
             captureHealth = configuredCaptureHealth
             return
         }
         guard PermissionService.microphoneState() == .granted else {
-            audioCapture.stop()
-            Task { await systemAudioCapture.stop() }
+            audioCapture.stop(flushPendingSegment: false)
+            scheduleAudioConfigurationWork { app in
+                await app.systemAudioCapture.stop(flushPendingSegment: false)
+            }
             audioCaptureFailureMessage = nil
             captureHealth = configuredCaptureHealth
             return
         }
         do {
+            let audioBoundaryToken = capturePrivacyBoundary.token
             try audioCapture.start { @Sendable wavData, duration in
-                await AppState.shared.processAudio(wavData, voicedDuration: duration)
+                await AppState.shared.processAudio(
+                    wavData,
+                    voicedDuration: duration,
+                    captureBoundaryToken: audioBoundaryToken
+                )
             }
             audioCaptureFailureMessage = nil
             captureHealth = configuredCaptureHealth
             if settingsStore.settings.meetingDetectionEnabled, lastScreenContext?.isMeeting == true {
-                Task {
-                    try? await systemAudioCapture.start { @Sendable wavData, duration in
-                        await AppState.shared.processSystemAudio(wavData, voicedDuration: duration)
-                    }
+                let meetingContext = lastScreenContext
+                scheduleAudioConfigurationWork { app in
+                    await app.startSystemAudio(for: meetingContext)
                 }
             } else {
-                Task { await systemAudioCapture.stop() }
+                scheduleAudioConfigurationWork { app in
+                    await app.systemAudioCapture.stop()
+                }
             }
         } catch {
             audioCaptureFailureMessage = "Microphone observation is unavailable."
             captureHealth = configuredCaptureHealth
+            scheduleAudioConfigurationWork { app in
+                await app.systemAudioCapture.stop(flushPendingSegment: false)
+            }
         }
     }
 
-    func updateScreenVisibility(_ visibility: ScreenContextVisibility) {
+    private func scheduleAudioConfigurationWork(
+        _ operation: @escaping @MainActor (AppState) async -> Void
+    ) {
+        audioConfigurationTask?.cancel()
+        let generation = UUID()
+        audioConfigurationGeneration = generation
+        let task = Task<Void, Never> { @MainActor [weak self] in
+            guard let self, !self.isPreparingForTermination else { return }
+            await operation(self)
+            guard self.audioConfigurationGeneration == generation else { return }
+            self.audioConfigurationTask = nil
+            self.audioConfigurationGeneration = nil
+        }
+        audioConfigurationTask = task
+    }
+
+    private func schedulePrivacyCleanup() {
+        guard !isPreparingForTermination, privacyCleanupTask == nil else { return }
+        privacyCleanupTask = Task<Void, Never> { @MainActor [weak self] in
+            guard let self, !self.isPreparingForTermination else { return }
+            // Stop every producer before awaiting a cloud worker, then place the
+            // final batch/job purge after those workers. Nothing can submit a late
+            // transcript or OCR batch beyond this fence.
+            let audioConfiguration = self.audioConfigurationTask
+            audioConfiguration?.cancel()
+            self.audioConfigurationTask = nil
+            self.audioConfigurationGeneration = nil
+            await audioConfiguration?.value
+            await self.screenCapture.invalidatePendingFramesAndWait()
+            await self.audioCapture.stopAndDrain(
+                flushPendingSegment: false,
+                cancelCallbacks: true
+            )
+            await self.systemAudioCapture.stop(flushPendingSegment: false)
+            let screenTask = self.activeScreenAnalysisTask
+            let audioTask = self.activeAudioAnalysisTask
+            screenTask?.cancel()
+            audioTask?.cancel()
+            await screenTask?.value
+            await audioTask?.value
+            await self.screenBatcher.cancelAndDrain()
+            await self.cancelPendingAudioTranscriptBatch()
+            try? await self.repository?.discardPendingAnalysisJobs(
+                sources: [.screen, .ambientAudio, .meetingMicrophone, .meetingSystemAudio],
+                processedAt: Date()
+            )
+            if let repository = self.repository {
+                self.pendingCount = (try? await repository.pendingAnalysisJobCount()) ?? self.pendingCount
+            }
+            self.privacyCleanupTask = nil
+            if !self.settingsStore.settings.isPaused, !self.isPreparingForTermination {
+                self.configureAudio()
+                await self.retryPending()
+            }
+        }
+    }
+
+    func updateScreenVisibility(_ visibility: ScreenContextVisibility) async {
+        // ScreenCaptureKit can report visibility from several awaited revalidation
+        // points. Serialize transitions so a quick private -> available change
+        // cannot restart producers before the private purge has completed.
+        await screenVisibilityGate.acquire()
+        defer { screenVisibilityGate.release() }
+        // Set the boundary before awaiting cancellation. A dispatcher task that
+        // was already in flight will then be rejected by processScreenFrame.
+        let previousVisibility = screenContextVisibility
+        // An unavailable AX/screen context stops screen work only. The microphone
+        // keeps its valid token; private contexts invalidate both modalities.
+        if visibility != .available, visibility != previousVisibility {
+            captureCommitFence.invalidate([.screen])
+            if visibility == .private {
+                capturePrivacyBoundary.invalidate()
+                captureCommitFence.invalidate([.audio])
+            }
+        }
+        screenContextVisibility = visibility
         indicatorActivities.setScreenVisibility(visibility)
         if visibility != .available {
+            let screenTask = activeScreenAnalysisTask
+            let audioTask = visibility == .private ? activeAudioAnalysisTask : nil
+            screenTask?.cancel()
+            audioTask?.cancel()
+            let audioConfiguration = audioConfigurationTask
+            audioConfiguration?.cancel()
+            audioConfigurationTask = nil
+            audioConfigurationGeneration = nil
+            await audioConfiguration?.value
             // Never let a previously available app/window become fallback metadata
             // after the active context turns private or unavailable.
             lastScreenContext = nil
             lastScreenJPEG = nil
-            Task {
-                await screenBatcher.cancel()
-                await systemAudioCapture.stop()
+            await screenCapture.invalidatePendingFramesAndWait()
+            await systemAudioCapture.stop(flushPendingSegment: false)
+            if visibility == .private {
+                if isEnrollingVoice {
+                    isEnrollingVoice = false
+                    voiceEnrollmentMessage = "Voice enrollment was cancelled in a private context."
+                }
+                await audioCapture.stopAndDrain(
+                    flushPendingSegment: false,
+                    cancelCallbacks: true
+                )
             }
+            await screenTask?.value
+            await audioTask?.value
+            // If a newer transition resumed availability while an awaited
+            // producer was stopping, that newer transition owns cleanup/restart.
+            guard screenContextVisibility == visibility else { return }
+            await screenBatcher.cancelAndDrain()
+            if visibility == .private {
+                await cancelPendingAudioTranscriptBatch()
+            }
+            let sourcesToDiscard: [ObservationSource] = visibility == .private
+                ? [.screen, .ambientAudio, .meetingMicrophone, .meetingSystemAudio]
+                : [.screen]
+            try? await repository?.discardPendingAnalysisJobs(
+                sources: sourcesToDiscard,
+                processedAt: Date()
+            )
+            if let repository {
+                pendingCount = (try? await repository.pendingAnalysisJobCount()) ?? pendingCount
+            }
+        }
+        if previousVisibility == .private, visibility != .private, !isPreparingForTermination {
+            configureAudio()
+        }
+        if visibility == .available,
+           previousVisibility != .available,
+           !settingsStore.settings.isPaused,
+           !isPreparingForTermination,
+           !isOpenAIWorkBlocked {
+            await retryPending()
         }
         captureHealth = configuredCaptureHealth
     }
@@ -525,13 +802,216 @@ final class AppState: ObservableObject {
         captureHealth = configuredCaptureHealth
     }
 
+    private func captureProcessingToken(for source: ObservationSource) -> UInt64? {
+        source == .manualNote ? nil : capturePrivacyBoundary.token
+    }
+
+    private func captureCommitAuthorization(
+        for source: ObservationSource
+    ) -> CaptureCommitAuthorization? {
+        switch source {
+        case .screen:
+            captureCommitFence.authorization(for: .screen)
+        case .ambientAudio, .meetingMicrophone, .meetingSystemAudio:
+            captureCommitFence.authorization(for: .audio)
+        case .manualNote:
+            nil
+        }
+    }
+
+    private func isCaptureWorkValid(
+        token: UInt64?,
+        source: ObservationSource
+    ) -> Bool {
+        guard !Task.isCancelled, !settingsStore.settings.isPaused else { return false }
+        if source != .manualNote, privacyCleanupTask != nil { return false }
+        if let token, !capturePrivacyBoundary.accepts(token) { return false }
+        return switch source {
+        case .screen:
+            screenContextVisibility == .available
+        case .ambientAudio, .meetingMicrophone, .meetingSystemAudio:
+            screenContextVisibility != .private
+        case .manualNote:
+            true
+        }
+    }
+
+    private func requireCaptureWork(
+        token: UInt64?,
+        source: ObservationSource
+    ) throws {
+        guard isCaptureWorkValid(token: token, source: source) else {
+            throw CancellationError()
+        }
+    }
+
     func processScreenFrame(_ frame: CapturedScreenFrame) async {
-        guard !settingsStore.settings.isPaused else { return }
+        let boundaryToken = capturePrivacyBoundary.token
+        guard isCaptureWorkValid(token: boundaryToken, source: .screen) else { return }
+        await transitionActiveScreenContext(to: frame.context)
+        guard isCaptureWorkValid(token: boundaryToken, source: .screen) else { return }
+        if settingsStore.settings.optimizationPhase == .legacy {
+            await processLegacyScreenFrame(frame, boundaryToken: boundaryToken)
+            return
+        }
         await screenBatcher.submit(frame)
     }
 
+    /// Meeting system audio follows context changes immediately rather than the
+    /// 60-second maintenance timer. A closing meeting is flushed while its old
+    /// context is still captured by the stream handler.
+    private func transitionActiveScreenContext(to context: ActiveContext) async {
+        let previousContext = lastScreenContext
+        let wasMeeting = previousContext?.isMeeting == true
+        let isMeeting = context.isMeeting
+        let meetingContextChanged = wasMeeting
+            && isMeeting
+            && MeetingContextIdentity(previousContext) != MeetingContextIdentity(context)
+        if wasMeeting, !isMeeting || meetingContextChanged {
+            lastMeetingEndedAt = Date()
+            // Both handlers still resolve against `previousContext` until these
+            // flushes complete. Only then may the new meeting identity be stored.
+            await systemAudioCapture.stop(flushPendingSegment: true)
+            await audioCapture.flushPendingSegment()
+            await audioTranscriptBatcher.flush()
+            try? await repository?.expediteMeetingRefinementJobs(at: Date())
+            await drainRefinementQueue()
+        }
+        lastScreenContext = context
+        if isMeeting, !wasMeeting { lastMeetingEndedAt = nil }
+        guard settingsStore.settings.meetingDetectionEnabled,
+              settingsStore.settings.isAudioActiveNow,
+              PermissionService.microphoneState() == .granted else {
+            if isMeeting { await systemAudioCapture.stop(flushPendingSegment: false) }
+            return
+        }
+        if isMeeting, !wasMeeting || meetingContextChanged {
+            await startSystemAudio(for: context)
+        }
+    }
+
+    private func startSystemAudio(for context: ActiveContext?) async {
+        let settings = settingsStore.settings
+        guard !Task.isCancelled,
+              AudioCaptureAdmissionPolicy.allowsMeetingSystemAudio(
+                isPreparingForTermination: isPreparingForTermination,
+                isPaused: settings.isPaused,
+                screenVisibility: screenContextVisibility,
+                privacyCleanupInProgress: privacyCleanupTask != nil,
+                isMeetingContext: context?.isMeeting == true && lastScreenContext?.isMeeting == true,
+                meetingDetectionEnabled: settings.meetingDetectionEnabled,
+                isAudioActiveNow: settings.isAudioActiveNow
+              ) else { return }
+        let audioBoundaryToken = capturePrivacyBoundary.token
+        try? await systemAudioCapture.start { @Sendable wavData, duration in
+            await AppState.shared.processSystemAudio(
+                wavData,
+                voicedDuration: duration,
+                meetingContext: context,
+                captureBoundaryToken: audioBoundaryToken
+            )
+        }
+        let currentSettings = settingsStore.settings
+        guard AudioCaptureAdmissionPolicy.allowsMeetingSystemAudio(
+            isPreparingForTermination: isPreparingForTermination,
+            isPaused: currentSettings.isPaused,
+            screenVisibility: screenContextVisibility,
+            privacyCleanupInProgress: privacyCleanupTask != nil,
+            isMeetingContext: context?.isMeeting == true && lastScreenContext?.isMeeting == true,
+            meetingDetectionEnabled: currentSettings.meetingDetectionEnabled,
+            isAudioActiveNow: currentSettings.isAudioActiveNow
+        ), capturePrivacyBoundary.accepts(audioBoundaryToken) else {
+            await systemAudioCapture.stop(flushPendingSegment: false)
+            return
+        }
+    }
+
+    private func processLegacyScreenFrame(
+        _ frame: CapturedScreenFrame,
+        boundaryToken: UInt64
+    ) async {
+        guard isCaptureWorkValid(token: boundaryToken, source: .screen),
+              let repository,
+              let mediaStore else { return }
+        let commitAuthorization = captureCommitAuthorization(for: .screen)
+        let activityContext: IndicatorActivityContext = frame.context.isMeeting ? .meeting : .screen
+        let activityToken = indicatorActivities.beginLocal(
+            IndicatorLocalActivityDescriptor(context: activityContext, startedAt: frame.capturedAt)
+        )
+        defer { indicatorActivities.finishLocal(activityToken) }
+        indicatorActivities.setScreenVisibility(.available)
+        if !hasPersistentIndicatorIssue {
+            captureHealth = frame.context.isMeeting ? .meeting : configuredCaptureHealth
+        }
+        lastScreenJPEG = frame.jpegData
+        var storedMediaIdentifier: String?
+        var storedObservationID: UUID?
+        do {
+            async let recognized = ocr.recognizeText(in: frame.image)
+            let expiresAt = frame.capturedAt.addingTimeInterval(
+                TimeInterval(settingsStore.settings.mediaRetentionHours * 3_600)
+            )
+            let mediaID = try await mediaStore.store(
+                frame.jpegData,
+                fileExtension: "jpg",
+                expiresAt: expiresAt
+            )
+            storedMediaIdentifier = mediaID
+            let recognizedText = ExclusionPolicy.redactSensitiveText(try await recognized)
+            guard isCaptureWorkValid(token: boundaryToken, source: .screen) else {
+                try? await mediaStore.remove(identifier: mediaID)
+                return
+            }
+            let observation = Observation(
+                source: .screen,
+                capturedAt: frame.capturedAt,
+                expiresAt: expiresAt,
+                applicationName: frame.context.applicationName,
+                bundleIdentifier: frame.context.bundleIdentifier,
+                windowTitle: frame.context.windowTitle,
+                url: frame.context.url,
+                text: recognizedText,
+                mediaIdentifier: mediaID,
+                contentFingerprint: frame.signature.digest,
+                isMeeting: frame.context.isMeeting
+            )
+            try await repository.saveObservationWithoutAnalysisJob(observation)
+            storedObservationID = observation.id
+            guard isCaptureWorkValid(token: boundaryToken, source: .screen) else {
+                try? await repository.deleteObservation(id: observation.id)
+                try? await mediaStore.remove(identifier: mediaID)
+                return
+            }
+            pendingCount += 1
+            try await analyze(
+                observation: observation,
+                mediaData: frame.jpegData,
+                captureBoundaryToken: boundaryToken,
+                captureCommitAuthorization: commitAuthorization
+            )
+            try requireCaptureWork(token: boundaryToken, source: .screen)
+        } catch {
+            if !isCaptureWorkValid(token: boundaryToken, source: .screen) {
+                if let storedObservationID {
+                    try? await repository.deleteObservation(id: storedObservationID)
+                }
+                if let storedMediaIdentifier {
+                    try? await mediaStore.remove(identifier: storedMediaIdentifier)
+                }
+                return
+            }
+            handleProcessingError(error, context: activityContext)
+        }
+        if !settingsStore.settings.isPaused, !hasPersistentIndicatorIssue {
+            captureHealth = configuredCaptureHealth
+        }
+    }
+
     func processScreenBatch(_ batch: BatchedScreenObservation) async {
-        guard !settingsStore.settings.isPaused, let repository, let mediaStore else { return }
+        let boundaryToken = capturePrivacyBoundary.token
+        guard isCaptureWorkValid(token: boundaryToken, source: .screen),
+              let repository,
+              let mediaStore else { return }
         let activityContext: IndicatorActivityContext = batch.context.isMeeting ? .meeting : .screen
         let activityToken = indicatorActivities.beginLocal(
             IndicatorLocalActivityDescriptor(context: activityContext, startedAt: batch.capturedAt)
@@ -542,12 +1022,18 @@ final class AppState: ObservableObject {
             captureHealth = batch.context.isMeeting ? .meeting : configuredCaptureHealth
         }
         lastScreenJPEG = batch.jpegData
-        lastScreenContext = batch.context
+        var storedMediaIdentifier: String?
+        var storedObservationID: UUID?
         do {
             let expiresAt = batch.capturedAt.addingTimeInterval(
                 TimeInterval(settingsStore.settings.mediaRetentionHours * 3_600)
             )
             let mediaID = try await mediaStore.store(batch.jpegData, fileExtension: "jpg", expiresAt: expiresAt)
+            storedMediaIdentifier = mediaID
+            guard isCaptureWorkValid(token: boundaryToken, source: .screen) else {
+                try? await mediaStore.remove(identifier: mediaID)
+                return
+            }
             let observation = Observation(
                 source: .screen,
                 capturedAt: batch.capturedAt,
@@ -562,9 +1048,25 @@ final class AppState: ObservableObject {
                 isMeeting: batch.context.isMeeting
             )
             try await repository.saveObservation(observation)
+            storedObservationID = observation.id
+            guard isCaptureWorkValid(token: boundaryToken, source: .screen) else {
+                try? await repository.deleteObservation(id: observation.id)
+                try? await mediaStore.remove(identifier: mediaID)
+                return
+            }
             pendingCount = try await repository.pendingAnalysisJobCount()
             await drainAnalysisQueue()
+            try requireCaptureWork(token: boundaryToken, source: .screen)
         } catch {
+            if !isCaptureWorkValid(token: boundaryToken, source: .screen) {
+                if let storedObservationID {
+                    try? await repository.deleteObservation(id: storedObservationID)
+                }
+                if let storedMediaIdentifier {
+                    try? await mediaStore.remove(identifier: storedMediaIdentifier)
+                }
+                return
+            }
             handleProcessingError(error, context: activityContext)
         }
         if !settingsStore.settings.isPaused, !hasPersistentIndicatorIssue {
@@ -572,8 +1074,17 @@ final class AppState: ObservableObject {
         }
     }
 
-    func processAudio(_ wavData: Data, voicedDuration: TimeInterval) async {
-        guard voicedDuration > 0 else { return }
+    func processAudio(
+        _ wavData: Data,
+        voicedDuration: TimeInterval,
+        captureBoundaryToken suppliedBoundaryToken: UInt64? = nil
+    ) async {
+        let boundaryToken = suppliedBoundaryToken ?? capturePrivacyBoundary.token
+        guard voicedDuration > 0,
+              !Task.isCancelled,
+              capturePrivacyBoundary.accepts(boundaryToken),
+              !settingsStore.settings.isPaused,
+              screenContextVisibility != .private else { return }
         if isEnrollingVoice {
             do {
                 let reference = WAVEncoder.cappedForVoiceReference(wavData)
@@ -587,41 +1098,50 @@ final class AppState: ObservableObject {
             }
             return
         }
+        let context = lastScreenContext
+        let source: ObservationSource = context?.isMeeting == true ? .meetingMicrophone : .ambientAudio
+        guard isCaptureWorkValid(token: boundaryToken, source: source) else { return }
         guard let repository, let mediaStore else { return }
-        let activityContext: IndicatorActivityContext = lastScreenContext?.isMeeting == true ? .meeting : .voice
+        let activityContext: IndicatorActivityContext = context?.isMeeting == true ? .meeting : .voice
         let activityToken = indicatorActivities.beginLocal(
             IndicatorLocalActivityDescriptor(context: activityContext)
         )
         defer { indicatorActivities.finishLocal(activityToken) }
         let now = Date()
         let expiresAt = now.addingTimeInterval(TimeInterval(settingsStore.settings.mediaRetentionHours * 3_600))
+        var storedMediaIdentifier: String?
+        var storedObservationID: UUID?
         do {
             let mediaID = try await mediaStore.store(wavData, fileExtension: "wav", expiresAt: expiresAt)
-            var observation = Observation(
-                source: lastScreenContext?.isMeeting == true ? .meetingMicrophone : .ambientAudio,
+            storedMediaIdentifier = mediaID
+            try requireCaptureWork(token: boundaryToken, source: source)
+            let observation = Observation(
+                source: source,
                 capturedAt: now,
                 expiresAt: expiresAt,
-                applicationName: lastScreenContext?.applicationName,
-                bundleIdentifier: lastScreenContext?.bundleIdentifier,
-                windowTitle: lastScreenContext?.windowTitle,
-                url: lastScreenContext?.url,
+                applicationName: context?.applicationName,
+                bundleIdentifier: context?.bundleIdentifier,
+                windowTitle: context?.windowTitle,
+                url: context?.url,
                 mediaIdentifier: mediaID,
-                isMeeting: lastScreenContext?.isMeeting ?? false
+                isMeeting: context?.isMeeting ?? false
             )
             try await repository.saveObservation(observation)
+            storedObservationID = observation.id
+            try requireCaptureWork(token: boundaryToken, source: source)
             pendingCount = try await repository.pendingAnalysisJobCount()
-            guard let key = try settingsStore.apiKey() else { return }
-            let transcript = try await ai.transcribe(
-                wavData: wavData,
-                diarize: observation.isMeeting,
-                languageTag: settingsStore.settings.outputLanguageTag,
-                knownSpeakerReference: observation.isMeeting ? try settingsStore.voiceReference() : nil,
-                apiKey: key
-            )
-            observation.text = ExclusionPolicy.redactSensitiveText(transcript)
-            try await repository.saveObservation(observation)
             await drainAnalysisQueue()
+            pendingCount = try await repository.pendingAnalysisJobCount()
         } catch {
+            if !isCaptureWorkValid(token: boundaryToken, source: source) {
+                if let storedObservationID {
+                    try? await repository.deleteObservation(id: storedObservationID)
+                }
+                if let storedMediaIdentifier {
+                    try? await mediaStore.remove(identifier: storedMediaIdentifier)
+                }
+                return
+            }
             handleProcessingError(error, context: activityContext)
         }
         if !settingsStore.settings.isPaused, !hasPersistentIndicatorIssue {
@@ -629,44 +1149,190 @@ final class AppState: ObservableObject {
         }
     }
 
-    func processSystemAudio(_ wavData: Data, voicedDuration: TimeInterval) async {
-        guard voicedDuration > 0, let repository, let mediaStore else { return }
+    func processSystemAudio(
+        _ wavData: Data,
+        voicedDuration: TimeInterval,
+        meetingContext: ActiveContext? = nil,
+        captureBoundaryToken suppliedBoundaryToken: UInt64? = nil
+    ) async {
+        let source: ObservationSource = .meetingSystemAudio
+        let boundaryToken = suppliedBoundaryToken ?? capturePrivacyBoundary.token
+        guard voicedDuration > 0,
+              !Task.isCancelled,
+              isCaptureWorkValid(token: boundaryToken, source: source),
+              let repository,
+              let mediaStore else { return }
         let activityToken = indicatorActivities.beginLocal(
             IndicatorLocalActivityDescriptor(context: .meeting)
         )
         defer { indicatorActivities.finishLocal(activityToken) }
         let now = Date()
         let expiresAt = now.addingTimeInterval(TimeInterval(settingsStore.settings.mediaRetentionHours * 3_600))
+        var storedMediaIdentifier: String?
+        var storedObservationID: UUID?
         do {
             let mediaID = try await mediaStore.store(wavData, fileExtension: "wav", expiresAt: expiresAt)
-            var observation = Observation(
+            storedMediaIdentifier = mediaID
+            try requireCaptureWork(token: boundaryToken, source: source)
+            let observation = Observation(
                 source: .meetingSystemAudio,
                 capturedAt: now,
                 expiresAt: expiresAt,
-                applicationName: lastScreenContext?.applicationName,
-                bundleIdentifier: lastScreenContext?.bundleIdentifier,
-                windowTitle: lastScreenContext?.windowTitle,
-                url: lastScreenContext?.url,
+                applicationName: meetingContext?.applicationName ?? lastScreenContext?.applicationName,
+                bundleIdentifier: meetingContext?.bundleIdentifier ?? lastScreenContext?.bundleIdentifier,
+                windowTitle: meetingContext?.windowTitle ?? lastScreenContext?.windowTitle,
+                url: meetingContext?.url ?? lastScreenContext?.url,
                 mediaIdentifier: mediaID,
                 isMeeting: true
             )
             try await repository.saveObservation(observation)
+            storedObservationID = observation.id
+            try requireCaptureWork(token: boundaryToken, source: source)
             pendingCount = try await repository.pendingAnalysisJobCount()
-            guard let key = try settingsStore.apiKey() else { return }
-            observation.text = ExclusionPolicy.redactSensitiveText(try await ai.transcribe(
-                wavData: wavData,
-                diarize: true,
-                languageTag: settingsStore.settings.outputLanguageTag,
-                knownSpeakerReference: try settingsStore.voiceReference(),
-                apiKey: key
-            ))
-            try await repository.saveObservation(observation)
             await drainAnalysisQueue()
+            pendingCount = try await repository.pendingAnalysisJobCount()
         } catch {
+            if !isCaptureWorkValid(token: boundaryToken, source: source) {
+                if let storedObservationID {
+                    try? await repository.deleteObservation(id: storedObservationID)
+                }
+                if let storedMediaIdentifier {
+                    try? await mediaStore.remove(identifier: storedMediaIdentifier)
+                }
+                return
+            }
             handleProcessingError(error, context: .meeting)
         }
         if !settingsStore.settings.isPaused, !hasPersistentIndicatorIssue {
             captureHealth = configuredCaptureHealth
+        }
+    }
+
+    @discardableResult
+    private func submitAudioTranscript(
+        _ observation: Observation,
+        audioDuration: TimeInterval
+    ) async -> AudioTranscriptSubmissionDisposition {
+        let context = ActiveContext(
+            applicationName: observation.applicationName ?? (observation.isMeeting ? "Meeting" : "Ambient audio"),
+            bundleIdentifier: observation.bundleIdentifier,
+            windowTitle: observation.windowTitle,
+            url: observation.url,
+            isMeeting: observation.isMeeting
+        )
+        let disposition = await audioTranscriptBatcher.submit(AudioTranscriptInput(
+            observationID: observation.id,
+            source: observation.source,
+            capturedAt: observation.capturedAt,
+            context: context,
+            text: observation.text,
+            audioDuration: audioDuration
+        ))
+        switch disposition {
+        case .accepted:
+            await optimizationRecorder.record(OptimizationTelemetryRecord(
+                metric: .batchFrameAccepted,
+                source: OptimizationTelemetrySource(observation.source),
+                isMeeting: observation.isMeeting
+            ))
+        case .deduplicated:
+            await optimizationRecorder.record(OptimizationTelemetryRecord(
+                metric: .batchSuppressedDuplicate,
+                reason: .duplicateTranscript,
+                source: OptimizationTelemetrySource(observation.source),
+                isMeeting: observation.isMeeting
+            ))
+        case .cancelled, .ignoredEmpty, .ignoredUnsupportedSource:
+            break
+        }
+        return disposition
+    }
+
+    func processAudioTranscriptBatch(_ batch: BatchedAudioTranscript) async {
+        guard !Task.isCancelled else { return }
+        let boundarySource: ObservationSource = batch.context.isMeeting ? .meetingMicrophone : .ambientAudio
+        let boundaryToken = capturePrivacyBoundary.token
+        guard let repository else { return }
+        guard isCaptureWorkValid(token: boundaryToken, source: boundarySource) else {
+            try? await repository.discardAnalysisJobs(
+                observationIDs: batch.observationIDs,
+                processedAt: Date()
+            )
+            return
+        }
+        guard !batch.text.isEmpty else { return }
+        let telemetrySource = batch.sources.count == 1
+            ? batch.sources.first.map(OptimizationTelemetrySource.init)
+            : .unknown
+        await optimizationRecorder.record(OptimizationTelemetryRecord(
+            metric: .batchEmitted,
+            source: telemetrySource,
+            occurrenceCount: batch.observationIDs.count,
+            isMeeting: batch.context.isMeeting
+        ))
+        var storedBatchObservationID: UUID?
+        do {
+            var representative: Observation?
+            for identifier in batch.contributingObservationIDs where representative == nil {
+                representative = try await repository.observation(id: identifier)
+            }
+            try requireCaptureWork(token: boundaryToken, source: boundarySource)
+            let source = representative?.source
+                ?? (batch.context.isMeeting ? .meetingMicrophone : .ambientAudio)
+            let expiresAt = batch.capturedAt.addingTimeInterval(
+                TimeInterval(settingsStore.settings.mediaRetentionHours * 3_600)
+            )
+            let fingerprint = "audio-batch:" + batch.observationIDs
+                .map(\.uuidString)
+                .sorted()
+                .joined(separator: ":")
+            let observation = Observation(
+                source: source,
+                capturedAt: batch.startedAt,
+                expiresAt: expiresAt,
+                applicationName: batch.context.applicationName,
+                bundleIdentifier: batch.context.bundleIdentifier,
+                windowTitle: batch.context.windowTitle,
+                url: batch.context.url,
+                text: ExclusionPolicy.redactSensitiveText(batch.text),
+                mediaIdentifier: representative?.mediaIdentifier,
+                contentFingerprint: fingerprint,
+                isMeeting: batch.context.isMeeting
+            )
+            try await repository.saveAudioTranscriptBatchObservation(
+                observation,
+                consuming: batch.observationIDs,
+                processedAt: Date()
+            )
+            storedBatchObservationID = observation.id
+            try requireCaptureWork(token: boundaryToken, source: boundarySource)
+            pendingCount = try await repository.pendingAnalysisJobCount()
+            await drainAnalysisQueue()
+        } catch {
+            if !isCaptureWorkValid(token: boundaryToken, source: boundarySource) {
+                try? await repository.discardAnalysisJobs(
+                    observationIDs: batch.observationIDs + [storedBatchObservationID].compactMap { $0 },
+                    processedAt: Date()
+                )
+                if let storedBatchObservationID {
+                    try? await repository.deleteObservation(id: storedBatchObservationID)
+                }
+                return
+            }
+            handleProcessingError(error, context: batch.context.isMeeting ? .meeting : .voice)
+        }
+    }
+
+    private func cancelPendingAudioTranscriptBatch() async {
+        let observationIDs = await audioTranscriptBatcher.cancelAndDrain()
+        guard !observationIDs.isEmpty, let repository else { return }
+        do {
+            try await repository.discardAnalysisJobs(
+                observationIDs: observationIDs,
+                processedAt: Date()
+            )
+        } catch {
+            handleProcessingError(error, context: .voice)
         }
     }
 
@@ -675,54 +1341,589 @@ final class AppState: ObservableObject {
         await drainRefinementQueue()
     }
 
-    private func drainAnalysisQueue() async {
-        guard !isDrainingAnalysisQueue,
-              !settingsStore.settings.isPaused,
-              let repository,
-              let mediaStore,
-              (try? settingsStore.apiKey()) != nil else { return }
-        isDrainingAnalysisQueue = true
-        defer { isDrainingAnalysisQueue = false }
-
+    func resumeCredentialBlockedJobs() async {
+        let persistenceTasks = Array(openAIBlockPersistenceTasks.values)
+        persistenceTasks.forEach { $0.cancel() }
+        for task in persistenceTasks { await task.value }
+        openAIBlockPersistenceTasks.removeAll()
+        pendingOpenAIBlockPersistence.removeAll()
         do {
-            let jobs = try await repository.claimAnalysisJobs(limit: 2, now: Date(), leaseDuration: 10 * 60)
-            for job in jobs {
-                guard var observation = try await repository.observation(id: job.observationID),
-                      observation.expiresAt > Date() else {
-                    try await repository.completeAnalysisJob(id: job.id)
-                    continue
-                }
-                var media: Data?
-                if let identifier = observation.mediaIdentifier {
-                    media = try? await mediaStore.read(identifier: identifier)
-                }
-                do {
-                    if observation.source != .screen, observation.text.isEmpty, let media,
-                       let key = try settingsStore.apiKey() {
-                        observation.text = ExclusionPolicy.redactSensitiveText(try await ai.transcribe(
-                            wavData: media,
-                            diarize: observation.isMeeting,
-                            languageTag: settingsStore.settings.outputLanguageTag,
-                            knownSpeakerReference: observation.isMeeting ? try settingsStore.voiceReference() : nil,
-                            apiKey: key
-                        ))
-                        try await repository.saveObservation(observation)
-                    }
-                    try await analyze(
-                        observation: observation,
-                        mediaData: observation.source == .screen ? media : nil
-                    )
-                    try await repository.completeAnalysisJob(id: job.id)
-                } catch {
-                    try await rescheduleAnalysis(job: job, after: error)
-                    handleProcessingError(error, context: Self.indicatorContext(for: observation))
+            if let repository {
+                try await repository.unblockCredentialAnalysisJobs(at: Date())
+                try await repository.unblockCredentialRefinementJobs(at: Date())
+                try await repository.clearOpenAIWorkBlock(at: Date())
+            }
+            isOpenAIWorkBlocked = false
+            captureHealth = configuredCaptureHealth
+            await retryPending()
+        } catch {
+            handleProcessingError(error, context: .credentials)
+        }
+    }
+
+    func refreshLocalIntelligenceStatus(prewarm: Bool = false) async {
+        let languageTag = settingsStore.settings.outputLanguageTag
+        let mode = OptimizationRuntimePolicy.localGateMode
+        if prewarm {
+            await localGate.prewarm(languageTag: languageTag, mode: mode)
+        }
+        localIntelligenceStatus = await localGate.status(languageTag: languageTag, mode: mode)
+    }
+
+    private enum AnalysisWorkerKind: Equatable {
+        case screen
+        case audio
+
+        var sources: [ObservationSource] {
+            switch self {
+            case .screen: [.screen, .manualNote]
+            case .audio: [.ambientAudio, .meetingMicrophone, .meetingSystemAudio]
+            }
+        }
+
+        func claimSources(screenVisibility: ScreenContextVisibility) -> [ObservationSource] {
+            switch self {
+            case .screen:
+                // Manual notes are explicit user input and remain processable
+                // while screen capture is private or unavailable. Screen jobs
+                // stay durable until visibility becomes available again.
+                screenVisibility == .available ? sources : [.manualNote]
+            case .audio:
+                sources
+            }
+        }
+    }
+
+    private func drainAnalysisQueue() async {
+        guard !isPreparingForTermination,
+              !isOpenAIWorkBlocked,
+              !settingsStore.settings.isPaused else { return }
+        screenAnalysisDrainRequested = true
+        audioAnalysisDrainRequested = true
+        // Each source owns an independent worker. A long transcription can no
+        // longer hold up a critical screen observation.
+        if activeScreenAnalysisTask == nil {
+            activeScreenAnalysisTask = Task<Void, Never> { @MainActor [weak self] in
+                guard let self else { return }
+                await self.drainAnalysisWorker(.screen)
+                self.activeScreenAnalysisTask = nil
+                if self.shouldRestartAnalysisWorker(.screen) {
+                    await self.drainAnalysisQueue()
                 }
             }
-            pendingCount = try await repository.pendingAnalysisJobCount()
+        }
+        if activeAudioAnalysisTask == nil {
+            activeAudioAnalysisTask = Task<Void, Never> { @MainActor [weak self] in
+                guard let self else { return }
+                await self.drainAnalysisWorker(.audio)
+                self.activeAudioAnalysisTask = nil
+                if self.shouldRestartAnalysisWorker(.audio) {
+                    await self.drainAnalysisQueue()
+                }
+            }
+        }
+        if let repository {
+            pendingCount = (try? await repository.pendingAnalysisJobCount()) ?? pendingCount
+        }
+    }
+
+    private func drainAnalysisWorker(_ worker: AnalysisWorkerKind) async {
+        let isAlreadyRunning = switch worker {
+        case .screen: isDrainingScreenAnalysisQueue
+        case .audio: isDrainingAudioAnalysisQueue
+        }
+        guard !isAlreadyRunning,
+              !isOpenAIWorkBlocked,
+              !isPreparingForTermination,
+              !settingsStore.settings.isPaused,
+              worker != .audio || screenContextVisibility != .private,
+              let repository,
+              let mediaStore else { return }
+        switch worker {
+        case .screen: isDrainingScreenAnalysisQueue = true
+        case .audio: isDrainingAudioAnalysisQueue = true
+        }
+        defer {
+            switch worker {
+            case .screen:
+                isDrainingScreenAnalysisQueue = false
+            case .audio:
+                isDrainingAudioAnalysisQueue = false
+            }
+        }
+
+        do {
+            while !Task.isCancelled,
+                  !isOpenAIWorkBlocked,
+                  !isPreparingForTermination,
+                  !settingsStore.settings.isPaused,
+                  worker != .audio || screenContextVisibility != .private {
+                switch worker {
+                case .screen: screenAnalysisDrainRequested = false
+                case .audio: audioAnalysisDrainRequested = false
+                }
+                let claimedBoundaryToken = capturePrivacyBoundary.token
+                let claimedCommitAuthorization = captureCommitFence.authorization(
+                    for: worker == .screen ? .screen : .audio
+                )
+                let jobs = try await repository.claimAnalysisJobs(
+                    limit: 1,
+                    now: Date(),
+                    leaseDuration: 10 * 60,
+                    sources: worker.claimSources(screenVisibility: screenContextVisibility)
+                )
+                guard let job = jobs.first else {
+                    let wakeRequested = switch worker {
+                    case .screen: screenAnalysisDrainRequested
+                    case .audio: audioAnalysisDrainRequested
+                    }
+                    if wakeRequested { continue }
+                    break
+                }
+                    guard var observation = try await repository.observation(id: job.observationID),
+                          observation.expiresAt > Date() else {
+                        try await repository.completeAnalysisJob(id: job.id)
+                        continue
+                    }
+                    let jobBoundaryToken: UInt64? = observation.source == .manualNote
+                        ? nil
+                        : claimedBoundaryToken
+                    let jobCommitAuthorization: CaptureCommitAuthorization? = observation.source == .manualNote
+                        ? nil
+                        : claimedCommitAuthorization
+                    var media: Data?
+                    if let identifier = observation.mediaIdentifier {
+                        media = try? await mediaStore.read(identifier: identifier)
+                    }
+                    guard !isOpenAIWorkBlocked,
+                          isCaptureWorkValid(token: jobBoundaryToken, source: observation.source) else {
+                        try await repository.rescheduleAnalysisJob(
+                            id: job.id,
+                            state: .retryable,
+                            nextAttemptAt: Date(),
+                            errorKind: .cancelled,
+                            errorMessage: "Processing paused at a privacy boundary."
+                        )
+                        break
+                    }
+                    do {
+                        if observation.source != .screen, observation.text.isEmpty, let media {
+                            observation.text = ExclusionPolicy.redactSensitiveText(
+                                try await OpenAIDurableAttemptContext.$number.withValue(
+                                    OpenAIDurableAttemptContext.base(forDurableAttempt: job.attempts)
+                                ) {
+                                    try await self.transcribeAudioObservation(observation, wavData: media)
+                                }
+                            )
+                            try requireCaptureWork(token: jobBoundaryToken, source: observation.source)
+                            try await repository.saveObservation(observation)
+                            try requireCaptureWork(token: jobBoundaryToken, source: observation.source)
+                        }
+                        let isRawAudioSegment = switch observation.source {
+                        case .ambientAudio, .meetingMicrophone, .meetingSystemAudio:
+                            observation.contentFingerprint?.hasPrefix("audio-batch:") != true
+                        case .screen, .manualNote:
+                            false
+                        }
+                        if isRawAudioSegment {
+                            if settingsStore.settings.optimizationPhase == .legacy {
+                                try await OpenAIDurableAttemptContext.$number.withValue(
+                                    OpenAIDurableAttemptContext.base(forDurableAttempt: job.attempts)
+                                ) {
+                                    try await self.analyze(
+                                        observation: observation,
+                                        mediaData: nil,
+                                        isRetry: job.attempts > 1,
+                                        captureBoundaryToken: jobBoundaryToken,
+                                        captureCommitAuthorization: jobCommitAuthorization
+                                    )
+                                }
+                                try requireCaptureWork(token: jobBoundaryToken, source: observation.source)
+                                try await repository.completeAnalysisJob(id: job.id)
+                                continue
+                            }
+                            let disposition = await submitAudioTranscript(observation, audioDuration: 0)
+                            try requireCaptureWork(token: jobBoundaryToken, source: observation.source)
+                            switch disposition {
+                            case .accepted, .deduplicated:
+                                // The raw job remains leased until the batch is
+                                // materialized transactionally. A crash can then
+                                // reclaim the transcript without retranscribing it.
+                                break
+                            case .cancelled:
+                                try await repository.rescheduleAnalysisJob(
+                                    id: job.id,
+                                    state: .retryable,
+                                    nextAttemptAt: Date(),
+                                    errorKind: .cancelled,
+                                    errorMessage: "Processing paused at a privacy boundary."
+                                )
+                            case .ignoredEmpty, .ignoredUnsupportedSource:
+                                try await repository.markObservationProcessed(id: observation.id, at: Date())
+                            }
+                            continue
+                        }
+                        try await OpenAIDurableAttemptContext.$number.withValue(
+                            OpenAIDurableAttemptContext.base(forDurableAttempt: job.attempts)
+                        ) {
+                            try await self.analyze(
+                                observation: observation,
+                                mediaData: observation.source == .screen ? media : nil,
+                                isRetry: job.attempts > 1,
+                                captureBoundaryToken: jobBoundaryToken,
+                                captureCommitAuthorization: jobCommitAuthorization
+                            )
+                        }
+                        try requireCaptureWork(token: jobBoundaryToken, source: observation.source)
+                        try await repository.completeAnalysisJob(id: job.id)
+                    } catch {
+                        let crossedBoundary = jobBoundaryToken.map {
+                            !capturePrivacyBoundary.accepts($0)
+                        } ?? false
+                        if crossedBoundary {
+                            try await repository.discardAnalysisJobs(
+                                observationIDs: [observation.id],
+                                processedAt: Date()
+                            )
+                            if let identifier = observation.mediaIdentifier {
+                                try? await mediaStore.remove(identifier: identifier)
+                            }
+                        } else {
+                            try await rescheduleAnalysis(job: job, after: error)
+                        }
+                        handleProcessingError(error, context: Self.indicatorContext(for: observation))
+                    }
+            }
         } catch {
             handleProcessingError(error, context: .followUp)
         }
+        pendingCount = (try? await repository.pendingAnalysisJobCount()) ?? pendingCount
+        await drainRefinementQueue()
     }
+
+    private func shouldRestartAnalysisWorker(_ worker: AnalysisWorkerKind) -> Bool {
+        let requested = switch worker {
+        case .screen: screenAnalysisDrainRequested
+        case .audio: audioAnalysisDrainRequested
+        }
+        return requested
+            && !isOpenAIWorkBlocked
+            && !isPreparingForTermination
+            && !settingsStore.settings.isPaused
+            && repository != nil
+            && mediaStore != nil
+            && (worker != .audio || screenContextVisibility != .private)
+    }
+
+    private func transcribeAudioObservation(
+        _ observation: Observation,
+        wavData: Data
+    ) async throws -> String {
+        if !observation.isMeeting {
+            let selectedLanguage = settingsStore.settings.outputLanguageTag
+            let localLanguage = selectedLanguage == "auto" ? Locale.current.identifier : selectedLanguage
+            let attempt = await localSpeechAnalyzer.transcribe(
+                wavData: wavData,
+                languageTag: localLanguage,
+                isMeeting: false
+            )
+            if case .completed(let transcript) = attempt {
+                return transcript.text
+            }
+        }
+
+        guard !isOpenAIWorkBlocked else {
+            throw OpenAIClientError.missingAPIKey
+        }
+        guard let key = try settingsStore.apiKey() else {
+            throw OpenAIClientError.missingAPIKey
+        }
+        return try await ai.transcribe(
+            wavData: wavData,
+            diarize: observation.isMeeting,
+            languageTag: settingsStore.settings.outputLanguageTag,
+            knownSpeakerReference: observation.isMeeting ? try settingsStore.voiceReference() : nil,
+            apiKey: key
+        )
+    }
+
+    private func drainRefinementQueue() async {
+        guard !isPreparingForTermination,
+              !isOpenAIWorkBlocked,
+              !settingsStore.settings.isPaused else { return }
+        refinementDrainRequested = true
+        guard activeRefinementTask == nil else { return }
+        activeRefinementTask = Task<Void, Never> { @MainActor [weak self] in
+            guard let self else { return }
+            await self.drainRefinementWorker()
+            self.activeRefinementTask = nil
+            if self.shouldRestartRefinementWorker {
+                await self.drainRefinementQueue()
+            }
+        }
+    }
+
+    private func drainRefinementWorker() async {
+        guard !isDrainingRefinementQueue,
+              !isPreparingForTermination,
+              !isOpenAIWorkBlocked,
+              !settingsStore.settings.isPaused,
+              OptimizationRuntimePolicy.deferredTerraRefinementEnabled,
+              let repository,
+              let key = try? settingsStore.apiKey() else { return }
+        isDrainingRefinementQueue = true
+        defer {
+            isDrainingRefinementQueue = false
+        }
+
+        do {
+            var didUpdateEvent = false
+            while !Task.isCancelled,
+                  !isPreparingForTermination,
+                  !isOpenAIWorkBlocked,
+                  !settingsStore.settings.isPaused {
+                refinementDrainRequested = false
+                let jobs = try await repository.claimRefinementJobs(
+                    limit: 1,
+                    now: Date(),
+                    leaseDuration: 20 * 60,
+                    criticalLeaseDuration: 10 * 60
+                )
+                guard let job = jobs.first else {
+                    if refinementDrainRequested { continue }
+                    break
+                }
+                guard let event = try await repository.event(id: job.eventID) else {
+                    await optimizationRecorder.record(OptimizationTelemetryRecord(
+                        metric: .refinementDiscardedStale,
+                        reason: .staleRevision
+                    ))
+                    try await repository.completeRefinementJob(
+                        id: job.id,
+                        eventRevision: job.eventRevision
+                    )
+                    continue
+                }
+                guard abs(event.updatedAt.timeIntervalSince(job.eventRevision)) < 0.001 else {
+                    // The event was edited or consolidated after this job was queued.
+                    await optimizationRecorder.record(OptimizationTelemetryRecord(
+                        metric: .refinementDiscardedStale,
+                        reason: .staleRevision,
+                        isMeeting: event.kind == .meeting
+                    ))
+                    try await repository.completeRefinementJob(
+                        id: job.id,
+                        eventRevision: job.eventRevision
+                    )
+                    continue
+                }
+                await optimizationRecorder.record(OptimizationTelemetryRecord(
+                    metric: .refinementQueueWait,
+                    source: .unknown,
+                    latencyMilliseconds: Int(max(0, Date().timeIntervalSince(job.createdAt)) * 1_000),
+                    isMeeting: event.kind == .meeting
+                ))
+                do {
+                    let refined = try await OpenAIDurableAttemptContext.$number.withValue(
+                        OpenAIDurableAttemptContext.base(forDurableAttempt: job.attempts)
+                    ) {
+                        try await self.ai.refine(
+                            event: event,
+                            outputLanguage: self.settingsStore.outputLanguagePrompt(),
+                            serviceTier: job.isCritical ? .default : .flex,
+                            apiKey: key
+                        )
+                    }
+                    let applied = try await repository.applyRefinementResult(
+                        refined,
+                        expectedRevision: job.eventRevision,
+                        jobID: job.id
+                    )
+                    guard applied else {
+                        await optimizationRecorder.record(OptimizationTelemetryRecord(
+                            metric: .refinementDiscardedStale,
+                            reason: .staleRevision,
+                            isMeeting: event.kind == .meeting
+                        ))
+                        continue
+                    }
+                    await optimizationRecorder.record(OptimizationTelemetryRecord(
+                        metric: .refinementCompleted,
+                        source: .unknown,
+                        latencyMilliseconds: Int(max(0, Date().timeIntervalSince(job.createdAt)) * 1_000),
+                        isMeeting: event.kind == .meeting
+                    ))
+                    didUpdateEvent = true
+                } catch {
+                    try await rescheduleRefinement(job: job, after: error)
+                    handleProcessingError(error, context: event.kind == .meeting ? .meeting : .screen)
+                }
+            }
+            if didUpdateEvent { await refresh() }
+        } catch {
+            handleProcessingError(error, context: .screen)
+        }
+    }
+
+    private var shouldRestartRefinementWorker: Bool {
+        refinementDrainRequested
+            && !isPreparingForTermination
+            && !isOpenAIWorkBlocked
+            && !settingsStore.settings.isPaused
+            && OptimizationRuntimePolicy.deferredTerraRefinementEnabled
+            && repository != nil
+            && (try? settingsStore.apiKey()) != nil
+    }
+
+    private func rescheduleAnalysis(job: AnalysisJob, after error: Error) async throws {
+        guard let repository else { return }
+        let disposition = Self.retryDisposition(for: error, attempts: job.attempts, isFlex: false)
+        if disposition.state == .blockedCredentials {
+            isOpenAIWorkBlocked = true
+            let message = Self.openAIBlockedMessage(for: error)
+            persistOpenAIBlock(
+                errorKind: disposition.kind,
+                errorMessage: message,
+                occurredAt: Date()
+            )
+            settingsStore.setAPIKeyState(.invalid(message))
+            captureHealth = .error("OpenAI credentials or spending limit need attention.")
+            return
+        }
+        try await repository.rescheduleAnalysisJob(
+            id: job.id,
+            state: disposition.state,
+            nextAttemptAt: disposition.nextAttemptAt,
+            errorKind: disposition.kind,
+            errorMessage: String(error.localizedDescription.prefix(500))
+        )
+    }
+
+    private func rescheduleRefinement(job: RefinementJob, after error: Error) async throws {
+        guard let repository else { return }
+        let disposition = Self.retryDisposition(for: error, attempts: job.attempts, isFlex: !job.isCritical)
+        if disposition.state == .blockedCredentials {
+            isOpenAIWorkBlocked = true
+            let message = Self.openAIBlockedMessage(for: error)
+            persistOpenAIBlock(
+                errorKind: disposition.kind,
+                errorMessage: message,
+                occurredAt: Date()
+            )
+            settingsStore.setAPIKeyState(.invalid(message))
+            captureHealth = .error("OpenAI credentials or spending limit need attention.")
+            return
+        }
+        try await repository.rescheduleRefinementJob(
+            id: job.id,
+            eventRevision: job.eventRevision,
+            state: disposition.state,
+            nextAttemptAt: disposition.nextAttemptAt,
+            errorKind: disposition.kind,
+            errorMessage: String(error.localizedDescription.prefix(500))
+        )
+        if !job.isCritical, disposition.state == .terminal {
+            await optimizationRecorder.record(OptimizationTelemetryRecord(
+                metric: .refinementAbandonedFlex,
+                reason: .flexUnavailable
+            ))
+        }
+    }
+
+    nonisolated static func retryDisposition(
+        for error: Error,
+        attempts: Int,
+        isFlex: Bool
+    ) -> (state: AnalysisJobState, nextAttemptAt: Date, kind: AnalysisErrorKind) {
+        let now = Date()
+        if error is CancellationError || (error as? URLError)?.code == .cancelled {
+            return (.retryable, now, .cancelled)
+        }
+        if let urlError = error as? URLError {
+            let retry = attempts < AnalysisRetryPolicy.maximumTransientAttempts
+            return (
+                retry ? .retryable : .terminal,
+                now.addingTimeInterval(AnalysisRetryPolicy.delay(afterAttempt: attempts)),
+                urlError.code == .timedOut ? .timeout : .network
+            )
+        }
+        guard let clientError = error as? OpenAIClientError else {
+            let retry = attempts < AnalysisRetryPolicy.maximumTransientAttempts
+            return (
+                retry ? .retryable : .terminal,
+                now.addingTimeInterval(AnalysisRetryPolicy.delay(afterAttempt: attempts)),
+                .unknown
+            )
+        }
+        switch clientError {
+        case .missingAPIKey:
+            return (.blockedCredentials, .distantFuture, .credentials)
+        case .invalidResponse, .malformedStructuredOutput:
+            return (.terminal, now, .invalidResponse)
+        case .requestFailed(let failure):
+            let blockedKinds: Set<String> = [
+                "credit_balance_exhausted",
+                "organization_spend_limit_exceeded",
+                "project_spend_limit_exceeded",
+                "organization_usage_limit_exceeded",
+                "insufficient_quota"
+            ]
+            if failure.status == 401 || failure.status == 403 || blockedKinds.contains(failure.errorKind) {
+                return (.blockedCredentials, .distantFuture, .credentials)
+            }
+            if isFlex, failure.errorKind == "resource_unavailable" {
+                let retry = attempts < AnalysisRetryPolicy.maximumFlexAttempts
+                return (
+                    retry ? .retryable : .terminal,
+                    now.addingTimeInterval(AnalysisRetryPolicy.delay(
+                        afterAttempt: attempts,
+                        retryAfter: failure.retryAfterSeconds
+                    )),
+                    .rateLimited
+                )
+            }
+            if failure.status == 429 {
+                let retry = attempts < AnalysisRetryPolicy.maximumRateLimitAttempts
+                return (
+                    retry ? .retryable : .terminal,
+                    now.addingTimeInterval(AnalysisRetryPolicy.delay(
+                        afterAttempt: attempts,
+                        retryAfter: failure.retryAfterSeconds
+                    )),
+                    .rateLimited
+                )
+            }
+            if failure.status == 408 || (500..<600).contains(failure.status) {
+                let retry = attempts < AnalysisRetryPolicy.maximumTransientAttempts
+                return (
+                    retry ? .retryable : .terminal,
+                    now.addingTimeInterval(AnalysisRetryPolicy.delay(afterAttempt: attempts)),
+                    failure.status == 408 ? .timeout : .server
+                )
+            }
+            return (.terminal, now, .terminalRequest)
+        }
+    }
+
+    private nonisolated static func openAIBlockedMessage(for error: Error) -> String {
+        guard let clientError = error as? OpenAIClientError,
+              case .requestFailed(let failure) = clientError else {
+            return "OpenAI API access is blocked. Save and validate the key after correcting it."
+        }
+        let isSpendLimit = [
+            "credit_balance_exhausted",
+            "organization_spend_limit_exceeded",
+            "project_spend_limit_exceeded",
+            "organization_usage_limit_exceeded",
+            "insufficient_quota"
+        ].contains(failure.errorKind)
+        return isSpendLimit
+            ? "OpenAI spending limit reached. Correct the project budget, then validate the API key to resume."
+            : clientError.localizedDescription
+    }
+
+    private nonisolated static let restoredOpenAIBlockMessage =
+        "OpenAI access is paused after a key or spending-limit failure. Validate the API key to resume."
 
     func addNote(_ text: String) async {
         guard let repository else { return }
@@ -749,15 +1950,38 @@ final class AppState: ObservableObject {
     }
 
     func beginVoiceEnrollment() async {
+        guard AudioCaptureAdmissionPolicy.allowsCapture(
+            isPreparingForTermination: isPreparingForTermination,
+            isPaused: settingsStore.settings.isPaused,
+            screenVisibility: screenContextVisibility,
+            privacyCleanupInProgress: privacyCleanupTask != nil
+        ) else {
+            voiceEnrollmentMessage = "Voice enrollment is unavailable while Iriz is paused or the current context is private."
+            return
+        }
         guard await PermissionService.requestMicrophone() else {
             voiceEnrollmentMessage = "Microphone permission is required."
             return
         }
+        guard AudioCaptureAdmissionPolicy.allowsCapture(
+            isPreparingForTermination: isPreparingForTermination,
+            isPaused: settingsStore.settings.isPaused,
+            screenVisibility: screenContextVisibility,
+            privacyCleanupInProgress: privacyCleanupTask != nil
+        ) else {
+            voiceEnrollmentMessage = "Voice enrollment is unavailable while Iriz is paused or the current context is private."
+            return
+        }
+        let audioBoundaryToken = capturePrivacyBoundary.token
         isEnrollingVoice = true
         voiceEnrollmentMessage = "Speak naturally for 2–10 seconds, then pause."
         do {
             try audioCapture.start { @Sendable wavData, duration in
-                await AppState.shared.processAudio(wavData, voicedDuration: duration)
+                await AppState.shared.processAudio(
+                    wavData,
+                    voicedDuration: duration,
+                    captureBoundaryToken: audioBoundaryToken
+                )
             }
         } catch {
             isEnrollingVoice = false
@@ -834,7 +2058,13 @@ final class AppState: ObservableObject {
 
     func ask(_ question: String) async {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isAsking, let searchService, let repository else { return }
+        guard !isPreparingForTermination,
+              !trimmed.isEmpty,
+              !isAsking,
+              let searchService,
+              let repository else { return }
+        beginTrackedInteractiveWorkflow()
+        defer { finishTrackedInteractiveWorkflow() }
 
         var conversation = selectedAssistantConversation ?? AssistantConversation(
             title: AssistantConversation.title(for: trimmed)
@@ -863,13 +2093,19 @@ final class AppState: ObservableObject {
         let answer: AssistantAnswer
         do {
             let candidates = try await searchService.candidates(for: retrievalQuery)
-            if let key = try settingsStore.apiKey() {
+            if let key = try settingsStore.apiKey(), !isOpenAIWorkBlocked {
                 answer = try await ai.answer(
                     question: trimmed,
                     candidates: candidates,
                     conversationContext: Array(previousAnswers.suffix(4)),
                     outputLanguage: settingsStore.outputLanguagePrompt(),
                     apiKey: key
+                )
+            } else if isOpenAIWorkBlocked {
+                answer = AssistantAnswer(
+                    question: trimmed,
+                    text: "OpenAI fallback is paused until the API key or project spending limit is corrected and validated in Settings.",
+                    citations: []
                 )
             } else if let first = candidates.first {
                 let urlText = first.urls.first.map { " \($0.absoluteString)" } ?? ""
@@ -1319,12 +2555,18 @@ final class AppState: ObservableObject {
         allowUnrelated: Bool = false,
         preparedDraft: FollowUpMergeDraft? = nil
     ) async {
-        guard let repository else { return }
+        guard !isPreparingForTermination, let repository else { return }
+        beginTrackedInteractiveWorkflow()
+        defer { finishTrackedInteractiveWorkflow() }
         pendingFollowUpMergeConfirmation = nil
         let selection = FollowUpMergeResolver.activeSelection(ids: ids, from: commitments)
         let values = selection.commitments
         guard values.count >= 2 else { return }
         let participatingIDs = selection.sourceIDs
+        guard preparedDraft != nil || !isOpenAIWorkBlocked else {
+            followUpOperationMessage = "OpenAI is paused. Correct and validate the API key or project budget before merging Actions."
+            return
+        }
         guard preparedDraft != nil || (try? settingsStore.apiKey()) != nil else {
             followUpOperationMessage = "Add a valid OpenAI API key before merging Actions."
             return
@@ -1445,6 +2687,7 @@ final class AppState: ObservableObject {
             followUpOperationMessage = nil
             await refresh()
         } catch {
+            handleProcessingError(error, context: .followUp)
             followUpOperationMessage = error.localizedDescription
         }
     }
@@ -1534,6 +2777,26 @@ final class AppState: ObservableObject {
         presentedEvent = nil
     }
 
+    private func beginTrackedInteractiveWorkflow() {
+        activeInteractiveWorkflowCount += 1
+    }
+
+    private func finishTrackedInteractiveWorkflow() {
+        activeInteractiveWorkflowCount = max(0, activeInteractiveWorkflowCount - 1)
+        if activeInteractiveWorkflowCount == 0 {
+            let waiters = interactiveWorkflowWaiters
+            interactiveWorkflowWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    private func waitForInteractiveWorkflows() async {
+        guard activeInteractiveWorkflowCount > 0 else { return }
+        await withCheckedContinuation { continuation in
+            interactiveWorkflowWaiters.append(continuation)
+        }
+    }
+
     func openMainWindow(section: MainSection? = nil) {
         if let section { selectedSection = section }
         NotificationCenter.default.post(name: .irizOpenMainWindow, object: nil)
@@ -1545,6 +2808,9 @@ final class AppState: ObservableObject {
     }
 
     func testAPIKey(_ candidate: String) async {
+        guard !isPreparingForTermination else { return }
+        beginTrackedInteractiveWorkflow()
+        defer { finishTrackedInteractiveWorkflow() }
         settingsStore.setAPIKeyState(.testing)
         do {
             try await ai.validateAPIKey(candidate)
@@ -1553,10 +2819,7 @@ final class AppState: ObservableObject {
             if secureStorageState == .ready {
                 captureHealth = configuredCaptureHealth
             }
-            if let repository {
-                try await repository.unblockCredentialAnalysisJobs(at: Date())
-            }
-            await retryPending()
+            await resumeCredentialBlockedJobs()
         } catch {
             if let clientError = error as? OpenAIClientError, clientError.isInvalidCredential {
                 settingsStore.setAPIKeyState(.invalid(clientError.localizedDescription))
@@ -1589,6 +2852,77 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Quiesces local producers and durably flushes the tail of both telemetry
+    /// streams before AppKit allows the process to exit.
+    func prepareForTermination() async -> Bool {
+        if !hasQuiescedForTermination {
+            guard !isPreparingForTermination else { return false }
+            isPreparingForTermination = true
+            let bootstrap = bootstrapTask
+            bootstrap?.cancel()
+            await bootstrap?.value
+            bootstrapTask = nil
+            let maintenance = maintenanceTask
+            let audioConfiguration = audioConfigurationTask
+            let privacyCleanup = privacyCleanupTask
+            maintenance?.cancel()
+            audioConfiguration?.cancel()
+            maintenanceTask = nil
+            audioConfigurationTask = nil
+            audioConfigurationGeneration = nil
+            await maintenance?.value
+            await audioConfiguration?.value
+            await privacyCleanup?.value
+            privacyCleanupTask = nil
+
+            // Unlike privacy/pause cancellation, app termination preserves every
+            // already-authorized audio tail as a durable local observation. Cloud
+            // workers remain gated by `isPreparingForTermination`.
+            await audioCapture.stopAndDrain(flushPendingSegment: true, cancelCallbacks: false)
+            await systemAudioCapture.stop(flushPendingSegment: true)
+            await screenCapture.stop()
+            // No analysis worker may append a transcript after the final batch
+            // drain. Stop and await cloud work before materializing batch tails.
+            let screenTask = activeScreenAnalysisTask
+            let audioTask = activeAudioAnalysisTask
+            let refinementTask = activeRefinementTask
+            screenTask?.cancel()
+            audioTask?.cancel()
+            refinementTask?.cancel()
+            await screenTask?.value
+            await audioTask?.value
+            await refinementTask?.value
+            // Materialize already-produced OCR/transcripts into the encrypted durable
+            // queues, but do not start new cloud work while the process is exiting.
+            await screenBatcher.flush()
+            await audioTranscriptBatcher.flush()
+            await screenBatcher.drainEmissions()
+            await audioTranscriptBatcher.drainEmissions()
+            await screenBatcher.cancelAndDrain()
+            _ = await audioTranscriptBatcher.cancelAndDrain()
+            await waitForInteractiveWorkflows()
+            hasQuiescedForTermination = true
+        }
+
+        var canTerminate = await waitForOpenAIBlockPersistence()
+        if !canTerminate {
+            storageError = "Iriz is keeping the app open because the OpenAI safety block is not yet durable. Try quitting again after storage recovers."
+        }
+        do {
+            try await usageRecorder.flushDurably()
+        } catch {
+            canTerminate = false
+            storageError = "OpenAI usage tail could not be persisted: \(error.localizedDescription)"
+        }
+        do {
+            try await optimizationRecorder.flushDurably()
+        } catch {
+            canTerminate = false
+            storageError = "Optimization telemetry tail could not be persisted: \(error.localizedDescription)"
+        }
+        return canTerminate
+    }
+
     func updateDailyDigestSchedule() {
         let hour = settingsStore.settings.dailyDigestHour
         let enabled = settingsStore.settings.dailyDigestEnabled
@@ -1611,10 +2945,82 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func analyze(observation: Observation, mediaData: Data?) async throws {
+    private func analyze(
+        observation: Observation,
+        mediaData: Data?,
+        isRetry: Bool = false,
+        captureBoundaryToken: UInt64? = nil,
+        captureCommitAuthorization suppliedCommitAuthorization: CaptureCommitAuthorization? = nil
+    ) async throws {
         guard let repository else { return }
-        guard let key = try settingsStore.apiKey() else { return }
+        try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
+        let commitAuthorization = suppliedCommitAuthorization
+            ?? captureCommitAuthorization(for: observation.source)
+        let languageTag = settingsStore.settings.outputLanguageTag
+        let gateMode = OptimizationRuntimePolicy.localGateMode
+        let gateStartedAt = Date()
+        let gateDecision = await localGate.route(
+            LocalGateInput(
+                observation: observation,
+                languageTag: languageTag,
+                isRetry: isRetry,
+                requiresVisualContext: false
+            ),
+            mode: gateMode
+        )
+        try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
+        let gateLatencyMilliseconds = gateDecision.classificationLatencyMilliseconds
+            ?? Int(max(0, Date().timeIntervalSince(gateStartedAt) * 1_000))
+        localIntelligenceStatus = await localGate.status(languageTag: languageTag, mode: gateMode)
+        try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
+        if gateDecision.route == .suppressCloud,
+           let localDraft = gateDecision.localEventDraftAttempt.draft {
+            let localEvent: ActivityEvent?
+            do {
+                localEvent = try localDraft.makeActivityEvent(
+                    from: observation,
+                    languageTag: languageTag == "auto" ? Locale.current.identifier : languageTag
+                )
+            } catch {
+                // Validation is repeated at the consumption boundary. Any forbidden
+                // or malformed local output fails open to the normal Luna path.
+                localEvent = nil
+            }
+            if let localEvent {
+                try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
+                try await repository.applyAnalysisMutation(AnalysisPersistenceMutation(
+                    observationID: observation.id,
+                    event: localEvent,
+                    captureCommitAuthorization: commitAuthorization
+                ))
+                pendingCount = max(0, pendingCount - 1)
+                await refresh()
+                await recordEventVisibility(event: localEvent, observation: observation, isCritical: false)
+                return
+            }
+        }
+        if gateDecision.route == .suppressCloud,
+           gateDecision.reason == .clearlyEmpty {
+            try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
+            try await repository.applyAnalysisMutation(AnalysisPersistenceMutation(
+                observationID: observation.id,
+                captureCommitAuthorization: commitAuthorization
+            ))
+            pendingCount = max(0, pendingCount - 1)
+            return
+        }
+        guard !isOpenAIWorkBlocked else {
+            throw OpenAIClientError.missingAPIKey
+        }
+        guard let key = try settingsStore.apiKey() else {
+            throw OpenAIClientError.missingAPIKey
+        }
             var shouldHighlightFollowUp = false
+            var persistedEvent: ActivityEvent?
+            var persistedCommitments: [Commitment] = []
+            var expectedCommitmentRevisions: [UUID: Date] = [:]
+            var persistedSubjects: [FollowUpSubject] = []
+            var refinementRequest: AnalysisRefinementRequest?
             // Keep one immutable creation policy for the entire request. If the
             // user changes the menu while the network call is in flight, the
             // returned tiles still retain the level that shaped their creation.
@@ -1649,30 +3055,106 @@ final class AppState: ObservableObject {
                 knownFollowUpSubjects: followUpSubjects,
                 apiKey: key
             )
+            try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
+            await recordAppleShadowQualification(
+                observation: observation,
+                decision: gateDecision,
+                interpretation: interpretation,
+                localLatencyMilliseconds: gateLatencyMilliseconds
+            )
+            try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
+            // Screen and audio inference may run concurrently, but their
+            // repository snapshots must not. Refresh and hold one FIFO gate
+            // through consolidation, linking, and the atomic mutation so two
+            // Luna responses cannot overwrite each other's evidence or Actions.
+            await analysisMutationGate.acquire()
+            defer { analysisMutationGate.release() }
+            await refresh()
+            try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
             let interpretedEvent = interpretation.event
                 ?? (interpretation.commitments.isEmpty ? nil : candidateProbe)
             if (interpretation.shouldCreateEvent || !interpretation.commitments.isEmpty),
                let event = interpretedEvent {
                 let localConsolidation = await consolidate(event)
-                let shouldRefine = interpretation.event != nil && (localConsolidation.importance >= .important
-                    || localConsolidation.status == .completed
-                    || localConsolidation.kind == .meeting)
-                let consolidated = localConsolidation
-                // The Luna/local result is durable and visible immediately. Terra
-                // refines a revisioned copy in the background and can never block
-                // this observation or overwrite a newer user edit.
-                try await repository.saveEvent(consolidated)
-                if shouldRefine {
-                    let isCritical = consolidated.status == .completed || consolidated.importance == .critical
-                    let delay: TimeInterval = isCritical ? 0 : (consolidated.kind == .meeting ? 5 * 60 : 30)
-                    try await repository.enqueueRefinement(
-                        eventID: consolidated.id,
-                        eventRevision: consolidated.updatedAt,
-                        isCritical: isCritical,
-                        notBefore: Date().addingTimeInterval(delay)
+                try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
+                let usesDeferredTerra = settingsStore.settings.optimizationPhase != .legacy
+                    && OptimizationRuntimePolicy.deferredTerraRefinementEnabled
+                let shouldRefine: Bool
+                if settingsStore.settings.optimizationPhase == .legacy {
+                    shouldRefine = interpretation.event != nil && (
+                        localConsolidation.importance >= .important
+                            || localConsolidation.status == .completed
+                            || localConsolidation.kind == .meeting
+                            || !interpretation.commitments.isEmpty
+                    )
+                } else {
+                    shouldRefine = !interpretation.eventIsCommitmentFallback && (
+                        localConsolidation.importance >= .important
+                            || localConsolidation.status == .completed
+                            || localConsolidation.kind == .meeting
                     )
                 }
+                var consolidated = localConsolidation
+                // Optimized phases persist Luna immediately and refine a revisioned
+                // copy in the background. Legacy preserves the synchronous baseline.
+                if shouldRefine, !usesDeferredTerra {
+                    do {
+                        consolidated = try await ai.refine(
+                            event: localConsolidation,
+                            outputLanguage: settingsStore.outputLanguagePrompt(),
+                            serviceTier: .default,
+                            apiKey: key
+                        )
+                        try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
+                    } catch {
+                        handleProcessingError(error, context: Self.indicatorContext(for: observation))
+                    }
+                }
+                try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
+                persistedEvent = consolidated
+                if usesDeferredTerra {
+                    if shouldRefine {
+                        let observationContext = ActiveContext(
+                            applicationName: observation.applicationName,
+                            bundleIdentifier: observation.bundleIdentifier,
+                            windowTitle: observation.windowTitle,
+                            url: observation.url,
+                            isMeeting: observation.isMeeting
+                        )
+                        let containsDeadline = interpretation.commitments.contains {
+                            $0.explicitDueAt != nil || $0.operation == .complete
+                        } || ObservationRiskSignals.containsDeadlineSignal(
+                            text: observation.text,
+                            context: observationContext
+                        )
+                        let isCritical = consolidated.status == .completed
+                            || consolidated.importance == .critical
+                            || containsDeadline
+                        let isMeetingTail = consolidated.kind == .meeting
+                            && lastMeetingEndedAt.map { observation.capturedAt <= $0 } == true
+                        let delay: TimeInterval = (isCritical || isMeetingTail)
+                            ? 0
+                            : (consolidated.kind == .meeting ? 5 * 60 : 30)
+                        refinementRequest = AnalysisRefinementRequest(
+                            eventID: consolidated.id,
+                            eventRevision: consolidated.updatedAt,
+                            isCritical: isCritical,
+                            notBefore: Date().addingTimeInterval(delay)
+                        )
+                    } else {
+                        await optimizationRecorder.record(OptimizationTelemetryRecord(
+                            metric: .refinementAvoided,
+                            reason: interpretation.eventIsCommitmentFallback ? .commitmentOnly : nil,
+                            source: OptimizationTelemetrySource(observation.source),
+                            isMeeting: consolidated.kind == .meeting
+                        ))
+                    }
+                }
                 var openCommitments = try await repository.commitments(includingClosed: false)
+                expectedCommitmentRevisions = Dictionary(
+                    openCommitments.map { ($0.id, $0.updatedAt) },
+                    uniquingKeysWith: { current, _ in current }
+                )
                 let locallyRelated = CommitmentLinker.relatedCandidates(
                     for: consolidated,
                     among: openCommitments,
@@ -1684,7 +3166,7 @@ final class AppState: ObservableObject {
                 )
                 for existing in locallyRelated {
                     if let linked = CommitmentLinker.linking(existing, to: consolidated) {
-                        try await repository.saveCommitment(linked)
+                        persistedCommitments.append(linked)
                         shouldHighlightFollowUp = shouldHighlightFollowUp || FollowUpIndicatorOutcomePolicy.shouldHighlight(
                             previous: existing,
                             updated: linked,
@@ -1744,7 +3226,7 @@ final class AppState: ObservableObject {
                             updated.subjectID = resolution.subject.id
                             updated.contextLabel = resolution.subject.name
                             updated.area = resolution.subject.area
-                            if resolution.wasCreated { try await repository.saveFollowUpSubject(resolution.subject) }
+                            if resolution.wasCreated { persistedSubjects.append(resolution.subject) }
                         }
                         if draft.operation == .complete,
                            draft.confidence >= 0.82,
@@ -1767,7 +3249,7 @@ final class AppState: ObservableObject {
                                 eventID: consolidated.id
                             ))
                         }
-                        try await repository.saveCommitment(updated)
+                        persistedCommitments.append(updated)
                         shouldHighlightFollowUp = shouldHighlightFollowUp || FollowUpIndicatorOutcomePolicy.shouldHighlight(
                             previous: previous,
                             updated: updated,
@@ -1794,7 +3276,7 @@ final class AppState: ObservableObject {
                         area: draft.area,
                         in: followUpSubjects
                     )
-                    if resolution.wasCreated { try await repository.saveFollowUpSubject(resolution.subject) }
+                    if resolution.wasCreated { persistedSubjects.append(resolution.subject) }
                     let personalizedPriority = FollowUpPrioritizer.personalizedScore(
                         aiScore: draft.priorityScore,
                         subject: resolution.subject
@@ -1830,7 +3312,7 @@ final class AppState: ObservableObject {
                             eventID: consolidated.id
                         )]
                     )
-                    try await repository.saveCommitment(proposed)
+                    persistedCommitments.append(proposed)
                     shouldHighlightFollowUp = shouldHighlightFollowUp || FollowUpIndicatorOutcomePolicy.shouldHighlight(
                         previous: nil,
                         updated: proposed,
@@ -1847,9 +3329,180 @@ final class AppState: ObservableObject {
                     indicatorActivities.emitSuccess(context: .followUp)
                 }
             }
-        try await repository.markObservationProcessed(id: observation.id, at: Date())
+        try requireCaptureWork(token: captureBoundaryToken, source: observation.source)
+        try await repository.applyAnalysisMutation(AnalysisPersistenceMutation(
+            observationID: observation.id,
+            event: persistedEvent,
+            commitments: persistedCommitments,
+            expectedCommitmentRevisions: expectedCommitmentRevisions,
+            subjects: persistedSubjects,
+            refinement: refinementRequest,
+            captureCommitAuthorization: commitAuthorization
+        ))
         pendingCount = max(0, pendingCount - 1)
         await refresh()
+        if let persistedEvent {
+            let visibilityContext = ActiveContext(
+                applicationName: observation.applicationName,
+                bundleIdentifier: observation.bundleIdentifier,
+                windowTitle: observation.windowTitle,
+                url: observation.url,
+                isMeeting: observation.isMeeting
+            )
+            let isCritical = persistedEvent.status == .completed
+                || persistedEvent.importance == .critical
+                || [.purchase, .decision, .task, .appointment].contains(persistedEvent.kind)
+                || ObservationRiskSignals.containsHighRiskSignal(
+                    text: observation.text,
+                    context: visibilityContext
+                )
+            await recordEventVisibility(
+                event: persistedEvent,
+                observation: observation,
+                isCritical: isCritical
+            )
+        }
+    }
+
+    private func recordEventVisibility(
+        event: ActivityEvent,
+        observation: Observation,
+        isCritical: Bool
+    ) async {
+        await optimizationRecorder.record(OptimizationTelemetryRecord(
+            metric: .eventVisible,
+            reason: isCritical ? .criticalEvent : .normalEvent,
+            source: OptimizationTelemetrySource(observation.source),
+            latencyMilliseconds: Int(max(0, Date().timeIntervalSince(observation.capturedAt)) * 1_000),
+            isMeeting: event.kind == .meeting
+        ))
+    }
+
+    private func recordAppleShadowQualification(
+        observation: Observation,
+        decision: LocalGateDecision,
+        interpretation: InterpretedObservation,
+        localLatencyMilliseconds: Int
+    ) async {
+        guard settingsStore.settings.optimizationPhase == .shadow,
+              let repository else { return }
+        let verdict: AppleShadowVerdict? = switch decision.verdict {
+        case .clearlyEmpty: .clearlyEmpty
+        case .uncertain: .uncertain
+        case .meaningful: .meaningful
+        case nil: nil
+        }
+        let routeReason: AppleShadowRouteReason = switch decision.reason {
+        case .gateDisabled: .gateDisabled
+        case .shadowMode: .shadowMode
+        case .meeting: .meeting
+        case .manualNote: .manualNote
+        case .retry: .retry
+        case .visualContextRequired: .visualContextRequired
+        case .insufficientText: .insufficientText
+        case .highRiskSignal: .highRiskSignal
+        case .unavailable: .unavailable
+        case .unqualifiedModel: .unqualifiedModel
+        case .clearlyEmpty: .clearlyEmpty
+        case .uncertain: .uncertain
+        case .meaningful: .meaningful
+        case .generationFailed: .generationFailed
+        }
+        let cloudMeaningful = interpretation.shouldCreateEvent
+            || interpretation.event != nil
+            || !interpretation.commitments.isEmpty
+        let context = ActiveContext(
+            applicationName: observation.applicationName ?? "Unknown",
+            bundleIdentifier: observation.bundleIdentifier,
+            windowTitle: observation.windowTitle,
+            url: observation.url,
+            isMeeting: observation.isMeeting
+        )
+        let isCriticalCase = observation.isMeeting
+            || ObservationRiskSignals.containsHighRiskSignal(text: observation.text, context: context)
+            || interpretation.event?.status == .completed
+            || interpretation.event.map {
+                $0.importance >= .important
+                    || $0.kind == .purchase
+                    || $0.kind == .meeting
+                    || $0.kind == .appointment
+                    || $0.kind == .decision
+                    || $0.kind == .task
+            } == true
+            || !interpretation.commitments.isEmpty
+        let localEventOutcome: AppleShadowLocalEventOutcome = switch decision.localEventDraftAttempt.outcome {
+        case .notAttempted: .notAttempted
+        case .unqualifiedModel: .unqualifiedModel
+        case .generated: .generated
+        case .rejectedOutput: .rejectedOutput
+        case .generationFailed: .generationFailed
+        }
+        let generatedDraftIsSafe: Bool = if localEventOutcome == .generated,
+                                             let draft = decision.localEventDraftAttempt.draft {
+            (try? draft.validated()) != nil
+        } else {
+            localEventOutcome != .generated
+        }
+        let localEventSafetyViolation = localEventOutcome == .generated && !generatedDraftIsSafe
+        let localEventCriticalMismatch = localEventOutcome == .generated && isCriticalCase
+        let localEventCloudCompatible: Bool? = if localEventOutcome == .generated {
+            if let event = interpretation.event,
+               let draft = decision.localEventDraftAttempt.draft {
+                interpretation.shouldCreateEvent
+                    && !interpretation.eventIsCommitmentFallback
+                    && interpretation.commitments.isEmpty
+                    && event.status == .observed
+                    && event.importance == .normal
+                    && Self.isAllowedLocalEventKind(event.kind)
+                    && LocalEventSemanticAgreement.isCompatible(draft, with: event)
+                    && !isCriticalCase
+                    && !localEventSafetyViolation
+            } else {
+                false
+            }
+        } else {
+            nil
+        }
+        let isFalseRejection = verdict == .clearlyEmpty && cloudMeaningful
+        let isGateDisagreement = isFalseRejection
+            || (verdict == .meaningful && !cloudMeaningful)
+        let isLocalEventDisagreement = localEventCloudCompatible == false
+            || localEventSafetyViolation
+        let allowsExamples = switch DistributionEnvironment.buildChannel {
+        case .development, .releaseCandidate: true
+        case .standalone, .setapp: false
+        }
+        let generationAttempted = decision.verdict != nil
+            || decision.reason == .generationFailed
+        let record = AppleShadowQualificationRecord(
+            observationID: observation.id,
+            modelFingerprint: decision.modelFingerprint,
+            verdict: verdict,
+            routeReason: routeReason,
+            localLatencyMilliseconds: localLatencyMilliseconds,
+            generationAttempted: generationAttempted,
+            fromCache: decision.fromCache,
+            structuredOutputValid: decision.verdict != nil,
+            cloudMeaningful: cloudMeaningful,
+            isCriticalCase: isCriticalCase,
+            localEventOutcome: localEventOutcome,
+            localEventLatencyMilliseconds: decision.localEventDraftAttempt.latencyMilliseconds,
+            localEventCloudCompatible: localEventCloudCompatible,
+            localEventCriticalMismatch: localEventCriticalMismatch,
+            localEventSafetyViolation: localEventSafetyViolation,
+            exampleText: allowsExamples && (isGateDisagreement || isLocalEventDisagreement)
+                ? observation.text
+                : nil
+        )
+        try? await repository.saveAppleShadowQualificationRecord(record)
+    }
+
+    private static func isAllowedLocalEventKind(_ kind: EventKind) -> Bool {
+        switch kind {
+        case .context, .research, .document, .note: true
+        case .application, .purchase, .appointment, .communication, .meeting,
+             .decision, .task, .other: false
+        }
     }
 
     private func consolidate(_ proposed: ActivityEvent) async -> ActivityEvent {
@@ -1901,9 +3554,12 @@ final class AppState: ObservableObject {
     private func handleProcessingError(_ error: Error, context: IndicatorActivityContext) {
         if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
         if let clientError = error as? OpenAIClientError {
-            if clientError.isInvalidCredential {
-                settingsStore.setAPIKeyState(.invalid(clientError.localizedDescription))
-                captureHealth = .error("OpenAI credentials need attention.")
+            let disposition = Self.retryDisposition(for: clientError, attempts: 1, isFlex: false)
+            if disposition.state == .blockedCredentials {
+                isOpenAIWorkBlocked = true
+                settingsStore.setAPIKeyState(.invalid(Self.openAIBlockedMessage(for: clientError)))
+                captureHealth = .error("OpenAI credentials or spending limit need attention.")
+                persistOpenAIBlock(clientError)
             } else {
                 indicatorActivities.emitAPIFailure(context: context)
             }
@@ -1914,6 +3570,74 @@ final class AppState: ObservableObject {
             return
         }
         captureHealth = .error(error.localizedDescription)
+    }
+
+    private func persistOpenAIBlock(_ error: OpenAIClientError) {
+        persistOpenAIBlock(
+            errorKind: .credentials,
+            errorMessage: Self.openAIBlockedMessage(for: error),
+            occurredAt: Date()
+        )
+    }
+
+    private func persistOpenAIBlock(
+        errorKind: AnalysisErrorKind,
+        errorMessage: String,
+        occurredAt: Date
+    ) {
+        let identifier = UUID()
+        pendingOpenAIBlockPersistence[identifier] = PendingOpenAIBlockPersistence(
+            errorKind: errorKind,
+            errorMessage: String(errorMessage.prefix(500)),
+            occurredAt: occurredAt
+        )
+        scheduleOpenAIBlockPersistence(identifier)
+    }
+
+    private func scheduleOpenAIBlockPersistence(_ identifier: UUID) {
+        guard openAIBlockPersistenceTasks[identifier] == nil,
+              pendingOpenAIBlockPersistence[identifier] != nil else { return }
+        let task = Task<Void, Never> { @MainActor [weak self] in
+            await self?.runOpenAIBlockPersistence(identifier)
+        }
+        openAIBlockPersistenceTasks[identifier] = task
+    }
+
+    private func runOpenAIBlockPersistence(_ identifier: UUID) async {
+        defer { openAIBlockPersistenceTasks.removeValue(forKey: identifier) }
+        guard let pending = pendingOpenAIBlockPersistence[identifier],
+              let repository else {
+            storageError = "The OpenAI safety block could not be persisted because encrypted storage is unavailable."
+            return
+        }
+        for attempt in 1...3 {
+            guard !Task.isCancelled else { return }
+            do {
+                try await repository.blockAllOpenAIJobs(
+                    errorKind: pending.errorKind,
+                    errorMessage: pending.errorMessage,
+                    at: pending.occurredAt
+                )
+                pendingOpenAIBlockPersistence.removeValue(forKey: identifier)
+                return
+            } catch {
+                guard attempt < 3 else {
+                    storageError = "The OpenAI safety block could not be persisted: \(error.localizedDescription)"
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(100 * attempt))
+            }
+        }
+    }
+
+    private func waitForOpenAIBlockPersistence() async -> Bool {
+        for identifier in pendingOpenAIBlockPersistence.keys
+            where openAIBlockPersistenceTasks[identifier] == nil {
+            scheduleOpenAIBlockPersistence(identifier)
+        }
+        let tasks = Array(openAIBlockPersistenceTasks.values)
+        for task in tasks { await task.value }
+        return pendingOpenAIBlockPersistence.isEmpty
     }
 
     private static func indicatorContext(for observation: Observation) -> IndicatorActivityContext {
@@ -1927,7 +3651,10 @@ final class AppState: ObservableObject {
     }
 
     private var configuredCaptureHealth: CaptureHealth {
-        CaptureHealthResolver.resolve(CaptureHealthInputs(
+        if isOpenAIWorkBlocked {
+            return .error(Self.restoredOpenAIBlockMessage)
+        }
+        return CaptureHealthResolver.resolve(CaptureHealthInputs(
             settings: settingsStore.settings,
             secureStorageState: secureStorageState,
             apiKeyState: settingsStore.apiKeyState,

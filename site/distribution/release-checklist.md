@@ -37,10 +37,10 @@
 - Set the final bundle identifier, version and build number.
 - Sign with the release Developer ID or App Store certificate.
 - Notarize and staple direct-download builds.
-- Publish the signed and notarized archive to GitHub Releases with the exact asset name `iriz.zip` so the permanent direct link works.
+- Publish the signed and notarized archive to GitHub Releases with the exact asset name `Iriz.zip` so the permanent direct link works, then enable the currently disabled direct-download control.
 - Validate entitlements and permission purpose strings.
 - Test first launch, onboarding, permissions, pause, exclusions and uninstall cleanup on a clean Mac.
-- Test Universal Binary behavior on Apple silicon and Intel if both remain supported.
+- Verify that the release contains only the `arm64` architecture and declares macOS 26.0 as its minimum system version.
 
 ## Listing and launch material
 

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 typealias OpenAIDataLoader = @Sendable (URLRequest) async throws -> (Data, URLResponse)
@@ -15,6 +16,32 @@ struct OpenAIModelConfiguration: Equatable, Sendable {
     let activityLevel: IndicatorAPILevel
     let serviceTier: OpenAIServiceTier
     let textVerbosity: OpenAITextVerbosity
+}
+
+struct OpenAIPromptCacheQualification: Equatable, Sendable {
+    let stablePrefixTokens: Int
+    let cacheReads: Int
+    let cacheWrites: Int
+    let observationDays: Int
+
+    var enablesExplicitBreakpoint: Bool {
+        stablePrefixTokens >= 1_024
+            && observationDays >= 7
+            && cacheWrites > 0
+            && Double(cacheReads) / Double(cacheWrites) >= 2
+    }
+}
+
+enum OpenAIPromptCachePolicy {
+    // Updated only after an instrumented release proves the seven-day read/write
+    // threshold. Explicit mode remains enabled below, so an absent breakpoint
+    // cannot trigger an implicit paid cache write.
+    static let observationQualification = OpenAIPromptCacheQualification(
+        stablePrefixTokens: 0,
+        cacheReads: 0,
+        cacheWrites: 0,
+        observationDays: 0
+    )
 }
 
 enum OpenAITask: String, CaseIterable, Equatable, Sendable {
@@ -140,24 +167,59 @@ enum OpenAIModelPolicy {
     }
 }
 
+struct OpenAIHTTPFailure: Equatable, Sendable {
+    let status: Int
+    let errorKind: String
+    let requestID: String?
+    let retryAfter: String?
+
+    var retryAfterSeconds: TimeInterval? {
+        guard let retryAfter else { return nil }
+        if let seconds = TimeInterval(retryAfter), seconds >= 0 { return seconds }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        guard let date = formatter.date(from: retryAfter) else { return nil }
+        return max(0, date.timeIntervalSinceNow)
+    }
+
+    var userMessage: String {
+        switch status {
+        case 401, 403:
+            return "Authentication or project access was rejected."
+        case 408:
+            return "The request timed out."
+        case 429 where errorKind == "resource_unavailable":
+            return "Flex processing is temporarily unavailable."
+        case 429:
+            return "The project is temporarily rate limited or has reached a usage limit."
+        case 500..<600:
+            return "The service is temporarily unavailable."
+        default:
+            return HTTPURLResponse.localizedString(forStatusCode: status)
+        }
+    }
+}
+
 enum OpenAIClientError: LocalizedError, Equatable {
     case missingAPIKey
     case invalidResponse
-    case requestFailed(status: Int, message: String)
+    case requestFailed(OpenAIHTTPFailure)
     case malformedStructuredOutput
 
     var errorDescription: String? {
         switch self {
         case .missingAPIKey: "Add your OpenAI API key in Settings."
         case .invalidResponse: "OpenAI returned an unreadable response."
-        case .requestFailed(let status, let message): "OpenAI request failed (\(status)): \(message)"
+        case .requestFailed(let failure): "OpenAI request failed (\(failure.status)): \(failure.userMessage)"
         case .malformedStructuredOutput: "OpenAI returned an event that did not match the iriz format."
         }
     }
 
     var isInvalidCredential: Bool {
-        guard case .requestFailed(let status, _) = self else { return false }
-        return status == 401 || status == 403
+        guard case .requestFailed(let failure) = self else { return false }
+        return failure.status == 401 || failure.status == 403
     }
 }
 
@@ -183,6 +245,7 @@ protocol AIProviding: Sendable {
     func refine(
         event: ActivityEvent,
         outputLanguage: String,
+        serviceTier: OpenAIServiceTier,
         apiKey: String
     ) async throws -> ActivityEvent
     func mergeFollowUps(
@@ -228,7 +291,13 @@ actor OpenAIClient: AIProviding {
             context: .credentials,
             indicatorTask: .credentialValidation
         )
-        _ = try await post(path: "responses", body: data, apiKey: apiKey, activity: descriptor)
+        _ = try await post(
+            path: "responses",
+            body: data,
+            apiKey: apiKey,
+            activity: descriptor,
+            logicalRequestID: "credential-validation:\(UUID().uuidString)"
+        )
     }
 
     func interpret(
@@ -256,7 +325,15 @@ actor OpenAIClient: AIProviding {
             context: activityContext,
             indicatorTask: .observationClassification
         )
-        var data = try await post(path: "responses", body: body, apiKey: apiKey, activity: descriptor)
+        let logicalRequestID = "observation:\(observation.id.uuidString)"
+        var data = try await post(
+            path: "responses",
+            body: body,
+            apiKey: apiKey,
+            activity: descriptor,
+            logicalRequestID: logicalRequestID,
+            historicalMaxOutputTokens: 2_400
+        )
         var output = try Self.outputText(from: data)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -286,7 +363,9 @@ actor OpenAIClient: AIProviding {
                 path: "responses",
                 body: detailedBody,
                 apiKey: apiKey,
-                activity: detailedDescriptor
+                activity: detailedDescriptor,
+                logicalRequestID: "observation-original:\(observation.id.uuidString)",
+                historicalMaxOutputTokens: 2_400
             )
             output = try Self.outputText(from: data)
             do {
@@ -356,6 +435,7 @@ actor OpenAIClient: AIProviding {
         return InterpretedObservation(
             shouldCreateEvent: draft.shouldCreateEvent || normalizedEvent != nil,
             event: normalizedEvent,
+            eventIsCommitmentFallback: event == nil && normalizedEvent != nil,
             commitments: commitments,
             needsOriginalImage: draft.needsOriginalImage,
             explanation: ""
@@ -383,7 +463,18 @@ actor OpenAIClient: AIProviding {
             context: .assistant,
             indicatorTask: .assistantAnswer
         )
-        let data = try await post(path: "responses", body: body, apiKey: apiKey, activity: descriptor)
+        let logicalRequestID = Self.hashedLogicalRequestID(
+            prefix: "answer",
+            components: [UUID().uuidString, question] + candidates.map { $0.id.uuidString }
+        )
+        let data = try await post(
+            path: "responses",
+            body: body,
+            apiKey: apiKey,
+            activity: descriptor,
+            logicalRequestID: logicalRequestID,
+            historicalMaxOutputTokens: 2_400
+        )
         let output = try Self.outputText(from: data)
         let payload: AnswerPayload
         do {
@@ -402,15 +493,27 @@ actor OpenAIClient: AIProviding {
     func refine(
         event: ActivityEvent,
         outputLanguage: String,
+        serviceTier: OpenAIServiceTier,
         apiKey: String
     ) async throws -> ActivityEvent {
-        let body = try OpenAIRequestFactory.refinementRequest(event: event, outputLanguage: outputLanguage)
+        let body = try OpenAIRequestFactory.refinementRequest(
+            event: event,
+            outputLanguage: outputLanguage,
+            serviceTier: serviceTier
+        )
         let descriptor = OpenAIModelPolicy.indicatorDescriptor(
             for: .eventConsolidation,
             context: .followUp,
             indicatorTask: .eventRefinement
         )
-        let data = try await post(path: "responses", body: body, apiKey: apiKey, activity: descriptor)
+        let data = try await post(
+            path: "responses",
+            body: body,
+            apiKey: apiKey,
+            activity: descriptor,
+            logicalRequestID: "event-refinement:\(event.id.uuidString):\(event.updatedAt.timeIntervalSince1970)",
+            historicalMaxOutputTokens: 2_400
+        )
         let output = try Self.outputText(from: data)
         let payload: EventRefinementPayload
         do {
@@ -424,9 +527,10 @@ actor OpenAIClient: AIProviding {
         refined.details = payload.details
         refined.entities = Array(Set(event.entities + payload.entities)).sorted()
         refined.importance = max(event.importance, EventImportance(rawValue: payload.importance) ?? event.importance)
-        if event.status != .completed {
-            refined.status = EventStatus(rawValue: payload.status) ?? event.status
-        }
+        // Terra receives a compact event, not the original OCR/transcript. It may
+        // improve wording and retrieval metadata, but it must never certify or
+        // change a completion state without the evidence Luna already accepted.
+        refined.status = event.status
         refined.confidence = min(max(payload.confidence, 0), 1)
         refined.updatedAt = Date()
         return refined
@@ -449,7 +553,18 @@ actor OpenAIClient: AIProviding {
             context: .followUp,
             indicatorTask: .followUpMerge
         )
-        let data = try await post(path: "responses", body: body, apiKey: apiKey, activity: descriptor)
+        let logicalRequestID = Self.hashedLogicalRequestID(
+            prefix: "follow-up-merge",
+            components: [UUID().uuidString] + commitments.map { $0.id.uuidString }.sorted()
+        )
+        let data = try await post(
+            path: "responses",
+            body: body,
+            apiKey: apiKey,
+            activity: descriptor,
+            logicalRequestID: logicalRequestID,
+            historicalMaxOutputTokens: 2_400
+        )
         let output = try Self.outputText(from: data)
         let payload: FollowUpMergePayload
         do {
@@ -504,10 +619,17 @@ actor OpenAIClient: AIProviding {
         )
         let telemetry = OpenAIRequestTelemetryContext.transcription(
             task: descriptor.task.rawValue,
+            context: descriptor.context.rawValue,
+            logicalRequestID: Self.hashedLogicalRequestID(
+                prefix: "transcription",
+                components: [model, SHA256.hash(data: wavData).description]
+            ),
+            attemptNumber: OpenAIDurableAttemptContext.number,
             model: model,
             body: body,
             wavData: wavData
         )
+        request.setValue(telemetry.attemptID.uuidString, forHTTPHeaderField: "X-Client-Request-Id")
         let data = try await perform(request, activity: descriptor, telemetry: telemetry)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw OpenAIClientError.invalidResponse
@@ -528,20 +650,62 @@ actor OpenAIClient: AIProviding {
         path: String,
         body: Data,
         apiKey: String,
-        activity: IndicatorAPIActivityDescriptor
+        activity: IndicatorAPIActivityDescriptor,
+        logicalRequestID: String,
+        historicalMaxOutputTokens: Int? = nil
     ) async throws -> Data {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw OpenAIClientError.missingAPIKey }
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
-        let telemetry = OpenAIRequestTelemetryContext.response(task: activity.task.rawValue, body: body)
+        let durableAttemptNumber = max(1, OpenAIDurableAttemptContext.number)
+        let telemetry = OpenAIRequestTelemetryContext.response(
+            task: activity.task.rawValue,
+            context: activity.context.rawValue,
+            logicalRequestID: logicalRequestID,
+            attemptNumber: durableAttemptNumber,
+            body: body
+        )
         request.httpMethod = "POST"
         request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(telemetry.attemptID.uuidString, forHTTPHeaderField: "X-Client-Request-Id")
         if telemetry.requestedServiceTier == OpenAIServiceTier.flex.rawValue {
             request.timeoutInterval = 15 * 60
         }
         request.httpBody = body
-        return try await perform(request, activity: activity, telemetry: telemetry)
+        let data = try await perform(request, activity: activity, telemetry: telemetry)
+        guard let historicalMaxOutputTokens,
+              let currentLimit = telemetry.maxOutputTokens,
+              historicalMaxOutputTokens > currentLimit,
+              let metadata = OpenAIResponseMetadata.decodeIfPresent(from: data),
+              metadata.status == "incomplete",
+              metadata.incompleteDetails?.reason == "max_output_tokens",
+              var retryObject = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+            return data
+        }
+
+        retryObject["max_output_tokens"] = historicalMaxOutputTokens
+        let retryBody = try JSONSerialization.data(withJSONObject: retryObject, options: [.sortedKeys])
+        let retryTelemetry = OpenAIRequestTelemetryContext.response(
+            task: activity.task.rawValue,
+            context: activity.context.rawValue,
+            logicalRequestID: logicalRequestID,
+            attemptNumber: durableAttemptNumber + 1,
+            body: retryBody
+        )
+        var retryRequest = URLRequest(url: baseURL.appendingPathComponent(path))
+        retryRequest.httpMethod = "POST"
+        retryRequest.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
+        retryRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        retryRequest.setValue(
+            retryTelemetry.attemptID.uuidString,
+            forHTTPHeaderField: "X-Client-Request-Id"
+        )
+        if retryTelemetry.requestedServiceTier == OpenAIServiceTier.flex.rawValue {
+            retryRequest.timeoutInterval = 15 * 60
+        }
+        retryRequest.httpBody = retryBody
+        return try await perform(retryRequest, activity: activity, telemetry: retryTelemetry)
     }
 
     private func perform(
@@ -587,10 +751,13 @@ actor OpenAIClient: AIProviding {
             )
             didRecordUsage = true
             guard succeeded else {
-                throw OpenAIClientError.requestFailed(
+                let headers = OpenAIResponseHeaders(response: http)
+                throw OpenAIClientError.requestFailed(OpenAIHTTPFailure(
                     status: http.statusCode,
-                    message: Self.safeErrorMessage(status: http.statusCode, errorKind: errorKind)
-                )
+                    errorKind: errorKind ?? "http_\(http.statusCode)",
+                    requestID: headers.requestID,
+                    retryAfter: headers.retryAfter
+                ))
             }
             if let token, let indicatorActivities {
                 _ = await indicatorActivities.finishAPI(token, completion: .success)
@@ -628,10 +795,13 @@ actor OpenAIClient: AIProviding {
         let metadata = data.flatMap(OpenAIResponseMetadata.decodeIfPresent(from:))
         let headers = response.map(OpenAIResponseHeaders.init(response:))
         let record = OpenAIUsageRecord(
+            logicalRequestID: context.logicalRequestID,
             attemptID: context.attemptID,
+            attemptNumber: context.attemptNumber,
             startedAt: startedAt,
             durationSeconds: max(0, Date().timeIntervalSince(startedAt)),
             task: context.task,
+            context: context.context,
             requestedModel: context.requestedModel,
             responseID: metadata?.id,
             actualModel: metadata?.model,
@@ -656,6 +826,12 @@ actor OpenAIClient: AIProviding {
 
     private static func isCancellation(_ error: Error) -> Bool {
         error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+
+    private static func hashedLogicalRequestID(prefix: String, components: [String]) -> String {
+        let source = ([prefix] + components).joined(separator: "\u{001f}")
+        let digest = SHA256.hash(data: Data(source.utf8))
+        return prefix + ":" + digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private static func activityContext(for observation: Observation) -> IndicatorActivityContext {
@@ -692,23 +868,6 @@ actor OpenAIClient: AIProviding {
         }
         let sanitized = String(String.UnicodeScalarView(allowed)).prefix(80)
         return sanitized.isEmpty ? "http_\(status)" : String(sanitized)
-    }
-
-    private static func safeErrorMessage(status: Int, errorKind: String?) -> String {
-        switch status {
-        case 401, 403:
-            return "Authentication or project access was rejected."
-        case 408:
-            return "The request timed out."
-        case 429 where errorKind == "resource_unavailable":
-            return "Flex processing is temporarily unavailable."
-        case 429:
-            return "The project is temporarily rate limited or has reached a usage limit."
-        case 500..<600:
-            return "The service is temporarily unavailable."
-        default:
-            return HTTPURLResponse.localizedString(forStatusCode: status)
-        }
     }
 
     private static func transportErrorKind(_ error: Error) -> String {
@@ -781,12 +940,21 @@ enum OpenAIRequestFactory {
         imageDetail: String = "low"
     ) throws -> Data {
         let policy = OpenAIModelPolicy.configuration(for: .observationClassification)
+        var stableContent: [String: Any] = [
+            "type": "input_text",
+            "text": interpretationStablePrompt
+        ]
+        let measuredQualification = OpenAIPromptCacheQualification(
+            stablePrefixTokens: interpretationStablePrompt.utf8.count / 4,
+            cacheReads: OpenAIPromptCachePolicy.observationQualification.cacheReads,
+            cacheWrites: OpenAIPromptCachePolicy.observationQualification.cacheWrites,
+            observationDays: OpenAIPromptCachePolicy.observationQualification.observationDays
+        )
+        if measuredQualification.enablesExplicitBreakpoint {
+            stableContent["prompt_cache_breakpoint"] = ["mode": "explicit"]
+        }
         var content: [[String: Any]] = [
-            [
-                "type": "input_text",
-                "text": interpretationStablePrompt,
-                "prompt_cache_breakpoint": ["mode": "explicit"]
-            ],
+            stableContent,
             [
                 "type": "input_text",
                 "text": interpretationDynamicPrompt(
@@ -806,20 +974,23 @@ enum OpenAIRequestFactory {
                 "detail": imageDetail
             ])
         }
-        return try jsonData([
+        var request: [String: Any] = [
             "model": policy.model,
             "input": [["role": "user", "content": content]],
             "reasoning": ["effort": policy.reasoningEffort.rawValue],
             "max_output_tokens": policy.maxOutputTokens,
             "service_tier": policy.serviceTier.rawValue,
             "store": false,
-            "prompt_cache_key": "iriz:observation:prompt-v2-schema-v2",
             "prompt_cache_options": explicitCacheOptions,
             "text": [
                 "verbosity": policy.textVerbosity.rawValue,
                 "format": interpretationFormat
             ]
-        ])
+        ]
+        if measuredQualification.enablesExplicitBreakpoint {
+            request["prompt_cache_key"] = "iriz:observation:prompt-v2-schema-v2"
+        }
+        return try jsonData(request)
     }
 
     static func answerRequest(
@@ -877,7 +1048,11 @@ enum OpenAIRequestFactory {
         ])
     }
 
-    static func refinementRequest(event: ActivityEvent, outputLanguage: String) throws -> Data {
+    static func refinementRequest(
+        event: ActivityEvent,
+        outputLanguage: String,
+        serviceTier: OpenAIServiceTier? = nil
+    ) throws -> Data {
         let policy = OpenAIModelPolicy.refinementConfiguration(for: event)
         let source: [String: Any] = [
             "kind": event.kind.rawValue,
@@ -892,8 +1067,8 @@ enum OpenAIRequestFactory {
         ]
         let prompt = """
         Refine one meaningful iriz event in \(outputLanguage). Make the title short and human, the summary factual, and the details useful for future retrieval.
-        Preserve evidence boundaries. Never invent a person, company, URL, date, completion, purchase, submission, or commitment. A completed status requires explicit confirmation already present in the input.
-        Prefer a cautious status when the evidence is ambiguous. Return only the fields in the refinement patch schema.
+        Preserve evidence boundaries. Never invent a person, company, URL, date, completion, purchase, submission, or commitment. Do not return or change the event status.
+        Return only the fields in the refinement patch schema.
 
         Event: \(try jsonString(source))
         """
@@ -902,7 +1077,7 @@ enum OpenAIRequestFactory {
             "input": prompt,
             "reasoning": ["effort": policy.reasoningEffort.rawValue],
             "max_output_tokens": policy.maxOutputTokens,
-            "service_tier": policy.serviceTier.rawValue,
+            "service_tier": (serviceTier ?? policy.serviceTier).rawValue,
             "store": false,
             "prompt_cache_options": explicitCacheOptions,
             "text": [
@@ -1021,9 +1196,12 @@ enum OpenAIRequestFactory {
         let concreteSubjects = knownFollowUpSubjects.filter {
             !FollowUpContextGrouper.isGenericSubjectName($0.name)
         }
-        let contexts = concreteSubjects.isEmpty
-            ? knownFollowUpContexts.filter { !FollowUpContextGrouper.isGenericSubjectName($0) }
-            : concreteSubjects.map(\.name)
+        let boundedSubjects = Array(concreteSubjects.prefix(12))
+        let contexts = boundedSubjects.isEmpty
+            ? Array(knownFollowUpContexts.lazy.filter {
+                !FollowUpContextGrouper.isGenericSubjectName($0)
+            }.prefix(12))
+            : boundedSubjects.map(\.name)
         let contextGuidance = contexts.isEmpty
             ? "No existing custom Action subjects are available yet."
             : "Existing Action subjects: \(contexts.joined(separator: ", ")). Reuse an exact existing label whenever it fits."
@@ -1040,7 +1218,7 @@ enum OpenAIRequestFactory {
                 "dueAt": commitment.dueAt.map { ISO8601DateFormatter().string(from: $0) } ?? NSNull()
             ]
         }
-        let subjectCatalog = concreteSubjects.prefix(12).map { subject -> [String: Any] in
+        let subjectCatalog = boundedSubjects.map { subject -> [String: Any] in
             [
                 "id": subject.id,
                 "name": subject.name,
@@ -1167,7 +1345,6 @@ enum OpenAIRequestFactory {
             "type": "object",
             "additionalProperties": false,
             "properties": [
-                "status": ["type": "string", "enum": EventStatus.allCases.map(\.rawValue)],
                 "importance": ["type": "integer", "minimum": 0, "maximum": 3],
                 "title": ["type": "string"],
                 "summary": ["type": "string"],
@@ -1175,7 +1352,7 @@ enum OpenAIRequestFactory {
                 "entities": ["type": "array", "items": ["type": "string"]],
                 "confidence": ["type": "number", "minimum": 0, "maximum": 1]
             ],
-            "required": ["status", "importance", "title", "summary", "details", "entities", "confidence"]
+            "required": ["importance", "title", "summary", "details", "entities", "confidence"]
         ]
     ]}
 
@@ -1234,7 +1411,6 @@ private struct EventPayload: Codable {
 }
 
 private struct EventRefinementPayload: Codable {
-    var status: String
     var importance: Int
     var title: String
     var summary: String

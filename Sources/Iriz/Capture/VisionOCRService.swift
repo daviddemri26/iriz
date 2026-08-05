@@ -2,7 +2,11 @@ import CoreGraphics
 import Foundation
 @preconcurrency import Vision
 
-actor VisionOCRService {
+protocol ScreenOCRProviding: Sendable {
+    func recognizeText(in image: CGImage) async throws -> String
+}
+
+actor VisionOCRService: ScreenOCRProviding {
     func recognizeText(in image: CGImage) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             let request = VNRecognizeTextRequest { request, error in

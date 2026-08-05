@@ -8,7 +8,7 @@ This copy is prepared for a future macOS listing. Confirm the final business mod
 - **Subtitle (30 characters maximum):** Context into clear Actions
 - **Primary category:** Productivity
 - **Secondary category:** Business
-- **Platform:** macOS 15 or later
+- **Platform:** macOS 26 or later on Apple silicon
 - **Copyright:** © 2026 iriz
 - **Marketing URL:** `https://lafayette-consulting.us/iriz/`
 - **Direct download URL:** `https://lafayette-consulting.us/iriz/download.html`

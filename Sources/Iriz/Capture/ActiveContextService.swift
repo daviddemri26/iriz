@@ -1,5 +1,6 @@
 @preconcurrency import AppKit
 import ApplicationServices
+import CoreGraphics
 import Foundation
 
 struct ActiveContext: Equatable, Sendable {
@@ -8,6 +9,57 @@ struct ActiveContext: Equatable, Sendable {
     var windowTitle: String?
     var url: URL?
     var isMeeting: Bool
+    /// The frontmost process and focused-window bounds are capture-boundary
+    /// metadata only. They let ScreenCaptureKit select the already-qualified
+    /// window instead of photographing the whole display (which could include
+    /// another private window from the same application).
+    var processIdentifier: pid_t?
+    var windowFrame: CGRect?
+
+    init(
+        applicationName: String? = nil,
+        bundleIdentifier: String? = nil,
+        windowTitle: String? = nil,
+        url: URL? = nil,
+        isMeeting: Bool,
+        processIdentifier: pid_t? = nil,
+        windowFrame: CGRect? = nil
+    ) {
+        self.applicationName = applicationName
+        self.bundleIdentifier = bundleIdentifier
+        self.windowTitle = windowTitle
+        self.url = url
+        self.isMeeting = isMeeting
+        self.processIdentifier = processIdentifier
+        self.windowFrame = windowFrame
+    }
+}
+
+/// Stable meeting identity used to rotate audio metadata without reacting to
+/// harmless focused-window geometry changes. URL query/fragment changes are
+/// ignored, while a different meeting path, title, or application is distinct.
+struct MeetingContextIdentity: Equatable, Sendable {
+    var application: String
+    var bundleIdentifier: String
+    var windowTitle: String
+    var host: String
+    var path: String
+
+    init?(_ context: ActiveContext?) {
+        guard let context, context.isMeeting else { return nil }
+        application = Self.normalized(context.applicationName)
+        bundleIdentifier = context.bundleIdentifier?.lowercased() ?? ""
+        windowTitle = Self.normalized(context.windowTitle)
+        host = context.url?.host()?.lowercased() ?? ""
+        path = context.url?.path(percentEncoded: false) ?? ""
+    }
+
+    private static func normalized(_ value: String?) -> String {
+        value?
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ") ?? ""
+    }
 }
 
 enum ActiveContextOutcome: Equatable, Sendable {
@@ -65,12 +117,15 @@ actor ActiveContextService {
         let window = copyElementAttribute(kAXFocusedWindowAttribute as CFString, from: appElement)
         let title = window.flatMap { copyStringAttribute(kAXTitleAttribute as CFString, from: $0) }
         let url = window.flatMap(findURL(in:))
+        let windowFrame = window.flatMap(frame(of:))
         let context = ActiveContext(
             applicationName: applicationName,
             bundleIdentifier: bundleIdentifier,
             windowTitle: title,
             url: url,
-            isMeeting: MeetingDetector.isMeeting(bundleIdentifier: bundleIdentifier, title: title, url: url)
+            isMeeting: MeetingDetector.isMeeting(bundleIdentifier: bundleIdentifier, title: title, url: url),
+            processIdentifier: application.processIdentifier,
+            windowFrame: windowFrame
         )
         guard !ExclusionPolicy.shouldExclude(
             bundleIdentifier: context.bundleIdentifier,
@@ -137,6 +192,20 @@ actor ActiveContextService {
 
     private func copyStringAttribute(_ attribute: CFString, from element: AXUIElement) -> String? {
         copyAttribute(attribute, from: element) as? String
+    }
+
+    private func frame(of window: AXUIElement) -> CGRect? {
+        guard let positionValue = copyAttribute(kAXPositionAttribute as CFString, from: window),
+              CFGetTypeID(positionValue) == AXValueGetTypeID(),
+              let sizeValue = copyAttribute(kAXSizeAttribute as CFString, from: window),
+              CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &position),
+              AXValueGetValue(sizeValue as! AXValue, .cgSize, &size),
+              size.width > 0,
+              size.height > 0 else { return nil }
+        return CGRect(origin: position, size: size)
     }
 
     private func copyAttribute(_ attribute: CFString, from element: AXUIElement) -> CFTypeRef? {

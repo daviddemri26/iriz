@@ -42,7 +42,7 @@ actor EncryptedMediaStore {
         let identifier = "\(UUID().uuidString)_\(Int(expiresAt.timeIntervalSince1970)).\(safeExtension).iriz"
         let context = Data(identifier.utf8)
         let encrypted = try crypto.seal(data, authenticating: context)
-        try encrypted.write(to: directory.appendingPathComponent(identifier), options: [.atomic, .completeFileProtection])
+        try EncryptedFileWriter.write(encrypted, to: directory.appendingPathComponent(identifier))
         return identifier
     }
 

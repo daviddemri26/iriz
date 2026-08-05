@@ -209,6 +209,43 @@ struct AudioSchedule: Codable, Equatable, Sendable {
     }
 }
 
+enum OptimizationPhase: String, Codable, CaseIterable, Equatable, Sendable {
+    case legacy
+    case shadow
+    case adaptive
+
+    static var runtimeDefault: OptimizationPhase {
+        resolve(
+            infoDictionary: Bundle.main.infoDictionary,
+            buildChannel: DistributionEnvironment.buildChannel
+        )
+    }
+
+    static func resolve(
+        infoDictionary: [String: Any]?,
+        buildChannel: IrizBuildChannel
+    ) -> OptimizationPhase {
+        if let value = infoDictionary?["IrizOptimizationPhase"] as? String,
+           let configured = OptimizationPhase(rawValue: value.lowercased()) {
+            return configured
+        }
+        return switch buildChannel {
+        case .development, .releaseCandidate:
+            .legacy
+        case .standalone, .setapp:
+            .adaptive
+        }
+    }
+
+    var localGateMode: LocalGateMode {
+        switch self {
+        case .legacy: .disabled
+        case .shadow: .shadow
+        case .adaptive: .adaptive
+        }
+    }
+}
+
 struct IrizSettings: Codable, Equatable, Sendable {
     var hasCompletedOnboarding = false
     var isPaused = true
@@ -219,6 +256,7 @@ struct IrizSettings: Codable, Equatable, Sendable {
     var meetingDetectionEnabled = true
     var voiceEnrollmentEnabled = false
     var outputLanguageTag = "auto"
+    var optimizationPhase = OptimizationPhase.runtimeDefault
     var followUpDetailLevel: FollowUpDetailLevel = .standard
     var followUpDisplay = FollowUpDisplayPreferences()
     var structuredRetention: StructuredRetention = .forever
@@ -283,6 +321,7 @@ struct IrizSettings: Codable, Equatable, Sendable {
         case meetingDetectionEnabled
         case voiceEnrollmentEnabled
         case outputLanguageTag
+        case optimizationPhase
         case followUpDetailLevel
         case followUpDisplay
         case structuredRetention
@@ -311,6 +350,9 @@ struct IrizSettings: Codable, Equatable, Sendable {
         meetingDetectionEnabled = try values.decodeIfPresent(Bool.self, forKey: .meetingDetectionEnabled) ?? true
         voiceEnrollmentEnabled = try values.decodeIfPresent(Bool.self, forKey: .voiceEnrollmentEnabled) ?? false
         outputLanguageTag = try values.decodeIfPresent(String.self, forKey: .outputLanguageTag) ?? "auto"
+        // Rollout phase is a signed-build property, never a sticky user default.
+        // This prevents a Shadow RC preference from carrying into Standalone.
+        optimizationPhase = .runtimeDefault
         followUpDetailLevel = try values.decodeIfPresent(FollowUpDetailLevel.self, forKey: .followUpDetailLevel)
             ?? .standard
         followUpDisplay = try values.decodeIfPresent(FollowUpDisplayPreferences.self, forKey: .followUpDisplay)

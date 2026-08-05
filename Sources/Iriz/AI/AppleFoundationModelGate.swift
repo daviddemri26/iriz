@@ -12,6 +12,18 @@ protocol LocalGateModelProviding: Sendable {
     func environment(localeIdentifier: String) async -> LocalGateModelEnvironment
     func prewarm() async
     func classify(prompt: String) async throws -> LocalGateVerdict
+    func draftEvent(prompt: String) async throws -> LocalEventDraft
+}
+
+@available(macOS 26.0, *)
+extension LocalGateModelProviding {
+    func draftEvent(prompt: String) async throws -> LocalEventDraft {
+        throw LocalEventDraftGenerationError.unsupportedProvider
+    }
+}
+
+enum LocalEventDraftGenerationError: Error, Equatable, Sendable {
+    case unsupportedProvider
 }
 
 @available(macOS 26.0, *)
@@ -25,6 +37,8 @@ protocol LocalGateRouting: Sendable {
 actor SystemFoundationModelGateProvider: LocalGateModelProviding {
     static let promptVersion = "local-gate-v1"
     static let schemaVersion = "local-gate-verdict-v1"
+    static let localEventPromptVersion = "local-event-v1"
+    static let localEventSchemaVersion = "local-event-draft-v1"
     static let contextWindowTokens = 4_096
 
     private static let instructions = """
@@ -35,6 +49,14 @@ actor SystemFoundationModelGateProvider: LocalGateModelProviding {
     Return uncertain whenever evidence is sparse, ambiguous, or could conceal a meaningful action.
     Never infer a completion, commitment, deadline, transaction, or meeting that is not explicit.
     When in doubt, return uncertain so a cloud model can review the evidence.
+    """
+
+    private static let localEventInstructions = """
+    You create a low-risk, factual journal observation from only the supplied text and metadata.
+    Return only context, research, document, or note.
+    Describe what is visibly being read, written, or explored; keep the title under 80 characters and the summary under 240 characters.
+    Never create an Action, task, reminder, commitment, promise, deadline, date, meeting, decision, purchase, confirmation, or completion claim.
+    Never infer facts that are not explicit in the supplied content.
     """
 
     private let model: SystemLanguageModel
@@ -49,7 +71,8 @@ actor SystemFoundationModelGateProvider: LocalGateModelProviding {
     }
 
     func environment(localeIdentifier: String) -> LocalGateModelEnvironment {
-        let locale = Locale(identifier: localeIdentifier)
+        let resolvedLocaleIdentifier = Self.resolvedLocaleIdentifier(localeIdentifier)
+        let locale = Locale(identifier: resolvedLocaleIdentifier)
         let availability: LocalModelAvailability
 
         switch model.availability {
@@ -72,9 +95,11 @@ actor SystemFoundationModelGateProvider: LocalGateModelProviding {
                 operatingSystemMajor: operatingSystemVersion.majorVersion,
                 operatingSystemMinor: operatingSystemVersion.minorVersion,
                 contextWindowTokens: Self.contextWindowTokens,
-                localeIdentifier: localeIdentifier,
+                localeIdentifier: resolvedLocaleIdentifier,
                 promptVersion: Self.promptVersion,
-                schemaVersion: Self.schemaVersion
+                schemaVersion: Self.schemaVersion,
+                localEventPromptVersion: Self.localEventPromptVersion,
+                localEventSchemaVersion: Self.localEventSchemaVersion
             )
         )
     }
@@ -101,6 +126,28 @@ actor SystemFoundationModelGateProvider: LocalGateModelProviding {
         )
         return response.content
     }
+
+    func draftEvent(prompt: String) async throws -> LocalEventDraft {
+        // Draft generation uses a fresh, text-only session. Reusing the gate session
+        // would retain another observation and violate the capability boundary.
+        let session = LanguageModelSession(model: model, instructions: Self.localEventInstructions)
+        session.prewarm()
+        let response = try await session.respond(
+            to: prompt,
+            generating: LocalEventDraft.self,
+            includeSchemaInPrompt: true,
+            options: GenerationOptions(
+                sampling: .greedy,
+                maximumResponseTokens: 192
+            )
+        )
+        return response.content
+    }
+
+    private static func resolvedLocaleIdentifier(_ requestedIdentifier: String) -> String {
+        let source = requestedIdentifier == "auto" ? Locale.current.identifier : requestedIdentifier
+        return Locale.identifier(.bcp47, from: source)
+    }
 }
 
 @available(macOS 26.0, *)
@@ -115,6 +162,8 @@ actor AppleFoundationModelGate: LocalGateRouting {
     private let cacheTTL: TimeInterval
     private let cacheCapacity: Int
     private let now: @Sendable () -> Date
+    private let telemetryHandler: OptimizationTelemetryHandler?
+    private let localEventDraftPolicy: LocalEventDraftPolicy
     private var cache: [String: CacheEntry] = [:]
 
     init(
@@ -122,13 +171,17 @@ actor AppleFoundationModelGate: LocalGateRouting {
         registry: AppleQualificationRegistry = .production,
         cacheTTL: TimeInterval = 15 * 60,
         cacheCapacity: Int = 512,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        telemetryHandler: OptimizationTelemetryHandler? = nil,
+        localEventDraftPolicy: LocalEventDraftPolicy = .routing
     ) {
         self.provider = provider
         self.registry = registry
         self.cacheTTL = max(0, cacheTTL)
         self.cacheCapacity = max(1, cacheCapacity)
         self.now = now
+        self.telemetryHandler = telemetryHandler
+        self.localEventDraftPolicy = localEventDraftPolicy
     }
 
     func prewarm(languageTag: String, mode: LocalGateMode) async {
@@ -162,17 +215,49 @@ actor AppleFoundationModelGate: LocalGateRouting {
     }
 
     func route(_ input: LocalGateInput, mode: LocalGateMode) async -> LocalGateDecision {
+        let startedAt = ContinuousClock.now
+        let decision = await routeWithoutTelemetry(input, mode: mode)
+        let metric: OptimizationTelemetryMetric
+        if decision.reason == .shadowMode {
+            metric = .appleGateShadowCompared
+        } else if decision.route == .suppressCloud {
+            metric = .appleGateSuppressedCloud
+        } else {
+            metric = .appleGateUsedCloud
+        }
+        let latencyMilliseconds = decision.classificationLatencyMilliseconds
+            ?? Self.elapsedMilliseconds(since: startedAt)
+        let telemetryReason = if decision.reason == .shadowMode, let verdict = decision.verdict {
+            Self.telemetryReason(for: verdict)
+        } else {
+            Self.telemetryReason(for: decision.reason)
+        }
+        await telemetryHandler?(OptimizationTelemetryRecord(
+            metric: metric,
+            reason: telemetryReason,
+            source: OptimizationTelemetrySource(input.source),
+            latencyMilliseconds: latencyMilliseconds,
+            fromCache: decision.fromCache,
+            isMeeting: input.isMeeting
+        ))
+        return decision
+    }
+
+    private func routeWithoutTelemetry(_ input: LocalGateInput, mode: LocalGateMode) async -> LocalGateDecision {
         let contentFingerprint = Self.contentFingerprint(for: input)
 
         guard mode != .disabled else {
             return .cloud(reason: .gateDisabled, contentFingerprint: contentFingerprint)
         }
 
-        if let bypassReason = DeterministicLocalGatePolicy.bypassReason(for: input) {
-            return .cloud(reason: bypassReason, contentFingerprint: contentFingerprint)
-        }
-
         let environment = await provider.environment(localeIdentifier: input.languageTag)
+        if let bypassReason = DeterministicLocalGatePolicy.bypassReason(for: input) {
+            return .cloud(
+                reason: bypassReason,
+                contentFingerprint: contentFingerprint,
+                modelFingerprint: environment.fingerprint
+            )
+        }
         guard environment.availability == .available else {
             return .cloud(
                 reason: .unavailable(environment.availability),
@@ -193,22 +278,38 @@ actor AppleFoundationModelGate: LocalGateRouting {
         let cacheKey = "\(environment.fingerprint.stableIdentifier):\(contentFingerprint)"
         let verdict: LocalGateVerdict
         let fromCache: Bool
+        let classificationLatencyMilliseconds: Int?
 
         if let cachedVerdict = cachedVerdict(for: cacheKey) {
             verdict = cachedVerdict
             fromCache = true
+            classificationLatencyMilliseconds = nil
         } else {
+            let classificationStartedAt = ContinuousClock.now
             do {
                 verdict = try await provider.classify(prompt: Self.prompt(for: input))
                 insert(verdict, for: cacheKey)
                 fromCache = false
+                classificationLatencyMilliseconds = Self.elapsedMilliseconds(since: classificationStartedAt)
             } catch {
                 return .cloud(
                     reason: .generationFailed,
                     contentFingerprint: contentFingerprint,
-                    modelFingerprint: environment.fingerprint
+                    modelFingerprint: environment.fingerprint,
+                    classificationLatencyMilliseconds: Self.elapsedMilliseconds(since: classificationStartedAt)
                 )
             }
+        }
+
+        let localEventDraftAttempt: LocalEventDraftAttempt
+        if verdict == .meaningful {
+            localEventDraftAttempt = await attemptLocalEventDraft(
+                for: input,
+                environment: environment,
+                mode: mode
+            )
+        } else {
+            localEventDraftAttempt = .notAttempted
         }
 
         if mode == .shadow {
@@ -217,7 +318,9 @@ actor AppleFoundationModelGate: LocalGateRouting {
                 contentFingerprint: contentFingerprint,
                 verdict: verdict,
                 modelFingerprint: environment.fingerprint,
-                fromCache: fromCache
+                fromCache: fromCache,
+                classificationLatencyMilliseconds: classificationLatencyMilliseconds,
+                localEventDraftAttempt: localEventDraftAttempt
             )
         }
 
@@ -229,7 +332,9 @@ actor AppleFoundationModelGate: LocalGateRouting {
                 reason: .clearlyEmpty,
                 contentFingerprint: contentFingerprint,
                 modelFingerprint: environment.fingerprint,
-                fromCache: fromCache
+                fromCache: fromCache,
+                classificationLatencyMilliseconds: classificationLatencyMilliseconds,
+                localEventDraftAttempt: localEventDraftAttempt
             )
         case .uncertain:
             return .cloud(
@@ -237,15 +342,77 @@ actor AppleFoundationModelGate: LocalGateRouting {
                 contentFingerprint: contentFingerprint,
                 verdict: verdict,
                 modelFingerprint: environment.fingerprint,
-                fromCache: fromCache
+                fromCache: fromCache,
+                classificationLatencyMilliseconds: classificationLatencyMilliseconds,
+                localEventDraftAttempt: localEventDraftAttempt
             )
         case .meaningful:
+            if localEventDraftAttempt.outcome == .generated,
+               localEventDraftAttempt.draft != nil {
+                return LocalGateDecision(
+                    route: .suppressCloud,
+                    verdict: verdict,
+                    reason: .meaningful,
+                    contentFingerprint: contentFingerprint,
+                    modelFingerprint: environment.fingerprint,
+                    fromCache: fromCache,
+                    classificationLatencyMilliseconds: classificationLatencyMilliseconds,
+                    localEventDraftAttempt: localEventDraftAttempt
+                )
+            }
             return .cloud(
                 reason: .meaningful,
                 contentFingerprint: contentFingerprint,
                 verdict: verdict,
                 modelFingerprint: environment.fingerprint,
-                fromCache: fromCache
+                fromCache: fromCache,
+                classificationLatencyMilliseconds: classificationLatencyMilliseconds,
+                localEventDraftAttempt: localEventDraftAttempt
+            )
+        }
+    }
+
+    private func attemptLocalEventDraft(
+        for input: LocalGateInput,
+        environment: LocalGateModelEnvironment,
+        mode: LocalGateMode
+    ) async -> LocalEventDraftAttempt {
+        // Defense in depth: callers must never be able to turn a bypassed source or
+        // risky observation into a local event by invoking this helper directly.
+        guard DeterministicLocalGatePolicy.bypassReason(for: input) == nil else {
+            return .notAttempted
+        }
+        switch (mode, localEventDraftPolicy) {
+        case (.shadow, .shadowOnly), (.shadow, .routing), (.adaptive, .routing):
+            break
+        case (.disabled, _), (.adaptive, .disabled), (.adaptive, .shadowOnly), (.shadow, .disabled):
+            return .notAttempted
+        }
+        if mode == .adaptive,
+           registry.profile(for: environment.fingerprint)?.localEventDraftEnabled != true {
+            return .unqualified
+        }
+
+        let startedAt = ContinuousClock.now
+        do {
+            let draft = try await provider.draftEvent(prompt: Self.localEventPrompt(for: input))
+            let validated = try draft.validated()
+            return LocalEventDraftAttempt(
+                outcome: .generated,
+                draft: validated,
+                latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt)
+            )
+        } catch is LocalEventDraftValidationError {
+            return LocalEventDraftAttempt(
+                outcome: .rejectedOutput,
+                draft: nil,
+                latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt)
+            )
+        } catch {
+            return LocalEventDraftAttempt(
+                outcome: .generationFailed,
+                draft: nil,
+                latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt)
             )
         }
     }
@@ -291,6 +458,31 @@ actor AppleFoundationModelGate: LocalGateRouting {
         """
     }
 
+    private static func localEventPrompt(for input: LocalGateInput) -> String {
+        let source = input.source.rawValue
+        let application = sanitized(input.applicationName, maximumLength: 120)
+        let windowTitle = sanitized(input.windowTitle, maximumLength: 240)
+        let host = sanitized(input.host, maximumLength: 200)
+        let text = sanitized(input.text, maximumLength: 6_000)
+
+        return """
+        SOURCE: \(source)
+        APPLICATION: \(application)
+        WINDOW: \(windowTitle)
+        HOST: \(host)
+        CONTENT:
+        \(text)
+        """
+    }
+
+    private static func elapsedMilliseconds(since startedAt: ContinuousClock.Instant) -> Int {
+        let components = startedAt.duration(to: .now).components
+        return max(
+            0,
+            Int(components.seconds * 1_000 + components.attoseconds / 1_000_000_000_000_000)
+        )
+    }
+
     private static func sanitized(_ value: String?, maximumLength: Int) -> String {
         guard let value else { return "none" }
         let cleaned = value
@@ -322,6 +514,35 @@ actor AppleFoundationModelGate: LocalGateRouting {
         case .modelNotReady: .modelNotReady
         case .unsupportedLocale: .unsupportedLocale
         case .unknown: .unavailable
+        }
+    }
+
+    private static func telemetryReason(
+        for reason: LocalGateDecisionReason
+    ) -> OptimizationTelemetryReason {
+        switch reason {
+        case .gateDisabled: .gateDisabled
+        case .shadowMode: .shadowMode
+        case .meeting: .meeting
+        case .manualNote: .manualNote
+        case .retry: .retry
+        case .visualContextRequired: .visualContextRequired
+        case .insufficientText: .insufficientText
+        case .highRiskSignal: .highRiskSignal
+        case .unavailable: .appleModelUnavailable
+        case .unqualifiedModel: .unqualifiedAppleModel
+        case .clearlyEmpty: .clearlyEmpty
+        case .uncertain: .uncertain
+        case .meaningful: .meaningful
+        case .generationFailed: .generationFailed
+        }
+    }
+
+    private static func telemetryReason(for verdict: LocalGateVerdict) -> OptimizationTelemetryReason {
+        switch verdict {
+        case .clearlyEmpty: .clearlyEmpty
+        case .uncertain: .uncertain
+        case .meaningful: .meaningful
         }
     }
 }

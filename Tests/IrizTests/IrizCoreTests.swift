@@ -28,6 +28,87 @@ struct IrizCoreTests {
         )
     }
 
+    @Test("Optimization rollout is controlled by the signed build, not saved settings")
+    func optimizationPhaseResolution() throws {
+        #expect(OptimizationPhase.resolve(
+            infoDictionary: [:],
+            buildChannel: .releaseCandidate
+        ) == .legacy)
+        #expect(OptimizationPhase.resolve(
+            infoDictionary: ["IrizOptimizationPhase": "shadow"],
+            buildChannel: .releaseCandidate
+        ) == .shadow)
+        #expect(OptimizationPhase.resolve(
+            infoDictionary: [:],
+            buildChannel: .standalone
+        ) == .adaptive)
+
+        let savedShadow = Data("{\"optimizationPhase\":\"shadow\"}".utf8)
+        let decoded = try JSONDecoder().decode(IrizSettings.self, from: savedShadow)
+        #expect(decoded.optimizationPhase == .runtimeDefault)
+        let encoded = try #require(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(decoded)
+        ) as? [String: Any])
+        #expect(encoded["optimizationPhase"] == nil)
+    }
+
+    @Test("Deferred Terra is an independent signed rollout stage")
+    func deferredTerraRollout() {
+        #expect(!OptimizationRuntimePolicy.resolveDeferredTerraRefinement(
+            infoDictionary: nil,
+            buildChannel: .releaseCandidate
+        ))
+        #expect(!OptimizationRuntimePolicy.resolveDeferredTerraRefinement(
+            infoDictionary: [
+                "IrizOptimizationStage": "process",
+                "IrizDeferredTerraRefinement": true
+            ],
+            buildChannel: .releaseCandidate
+        ))
+        #expect(OptimizationRuntimePolicy.resolveDeferredTerraRefinement(
+            infoDictionary: [
+                "IrizOptimizationStage": "terra",
+                "IrizDeferredTerraRefinement": true
+            ],
+            buildChannel: .releaseCandidate
+        ))
+        #expect(OptimizationRuntimePolicy.resolveDeferredTerraRefinement(
+            infoDictionary: nil,
+            buildChannel: .standalone
+        ))
+        #expect(!OptimizationRuntimePolicy.resolveDeferredTerraRefinement(
+            infoDictionary: ["IrizDeferredTerraRefinement": false],
+            buildChannel: .standalone
+        ))
+    }
+
+    @Test("Every signed optimization stage gates only its intended capabilities")
+    func optimizationStageCapabilityMatrix() {
+        let expected: [(IrizOptimizationStage, LocalGateMode, LocalEventDraftPolicy, Bool, Bool)] = [
+            (.baseline, .disabled, .disabled, false, false),
+            (.process, .disabled, .disabled, false, false),
+            (.appleShadow, .shadow, .shadowOnly, false, false),
+            (.adaptive, .adaptive, .disabled, false, false),
+            (.terra, .adaptive, .disabled, true, false),
+            (.localEvents, .adaptive, .routing, true, false),
+            (.speech, .adaptive, .routing, true, true),
+            (.production, .adaptive, .routing, true, true)
+        ]
+        for (stage, gate, localEvents, terra, speech) in expected {
+            let resolved = IrizOptimizationStage.resolve(
+                infoDictionary: ["IrizOptimizationStage": stage.rawValue],
+                buildChannel: .releaseCandidate
+            )
+            #expect(resolved == stage)
+            #expect(resolved.localGateMode == gate)
+            #expect(resolved.localEventDraftPolicy == localEvents)
+            #expect(resolved.allowsDeferredTerra == terra)
+            #expect(resolved.allowsLocalSpeech == speech)
+        }
+        #expect(IrizOptimizationStage.resolve(infoDictionary: nil, buildChannel: .releaseCandidate) == .baseline)
+        #expect(IrizOptimizationStage.resolve(infoDictionary: nil, buildChannel: .standalone) == .production)
+    }
+
     @Test("AES-GCM round trip rejects the wrong context")
     func cryptoRoundTrip() throws {
         let box = try CryptoBox(keyData: Data(repeating: 7, count: 32))

@@ -74,6 +74,10 @@ actor EncryptedSQLiteStore: LogRepository {
                 try Self.loadEncryptedDatabase(from: databaseFile, into: connection, crypto: crypto)
             }
             try Self.execute(Self.schemaSQL, on: connection)
+            try Self.applyAdditiveSchemaMigrations(on: connection)
+            // Persist additive schema migrations immediately. Durable queues and
+            // telemetry tables must survive a launch that performs no later write.
+            try Self.persistDatabase(connection, to: databaseFile, crypto: crypto)
         } catch {
             sqlite3_close(connection)
             self.database = nil
@@ -115,6 +119,87 @@ actor EncryptedSQLiteStore: LogRepository {
         try persist()
     }
 
+    func saveObservationWithoutAnalysisJob(_ observation: Observation) async throws {
+        let payload = try encoder.encode(observation)
+        try execute(
+            """
+            INSERT INTO observations (id, captured_at, expires_at, source, processed_at, payload)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                captured_at = excluded.captured_at,
+                expires_at = excluded.expires_at,
+                source = excluded.source,
+                processed_at = excluded.processed_at,
+                payload = excluded.payload
+            """,
+            [
+                .text(observation.id.uuidString),
+                .double(observation.capturedAt.timeIntervalSince1970),
+                .double(observation.expiresAt.timeIntervalSince1970),
+                .text(observation.source.rawValue),
+                observation.processedAt.map { .double($0.timeIntervalSince1970) } ?? .null,
+                .blob(payload)
+            ]
+        )
+        try persist()
+    }
+
+    func deleteObservation(id: UUID) async throws {
+        try execute("DELETE FROM observations WHERE id = ?", [.text(id.uuidString)])
+        try persist()
+    }
+
+    /// Materializes one semantic audio batch and consumes every raw segment in
+    /// the same encrypted SQLite transaction. A crash can therefore leave either
+    /// the raw jobs or the durable batch job, but never a gap between them.
+    func saveAudioTranscriptBatchObservation(
+        _ observation: Observation,
+        consuming observationIDs: [UUID],
+        processedAt: Date
+    ) async throws {
+        let payload = try encoder.encode(observation)
+        let consumedIDs = Array(Set(observationIDs)).filter { $0 != observation.id }
+        try transaction {
+            try execute(
+                """
+                INSERT INTO observations (id, captured_at, expires_at, source, processed_at, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    captured_at = excluded.captured_at,
+                    expires_at = excluded.expires_at,
+                    source = excluded.source,
+                    processed_at = excluded.processed_at,
+                    payload = excluded.payload
+                """,
+                [
+                    .text(observation.id.uuidString),
+                    .double(observation.capturedAt.timeIntervalSince1970),
+                    .double(observation.expiresAt.timeIntervalSince1970),
+                    .text(observation.source.rawValue),
+                    observation.processedAt.map { .double($0.timeIntervalSince1970) } ?? .null,
+                    .blob(payload)
+                ]
+            )
+            if observation.processedAt == nil {
+                try insertAnalysisJobIfNeeded(observationID: observation.id, at: observation.capturedAt)
+            }
+            for identifier in consumedIDs {
+                guard var raw = try fetchObservation(id: identifier) else { continue }
+                raw.processedAt = processedAt
+                let rawPayload = try encoder.encode(raw)
+                try execute(
+                    "UPDATE observations SET processed_at = ?, payload = ? WHERE id = ?",
+                    [.double(processedAt.timeIntervalSince1970), .blob(rawPayload), .text(identifier.uuidString)]
+                )
+                try execute(
+                    "DELETE FROM analysis_jobs WHERE observation_id = ?",
+                    [.text(identifier.uuidString)]
+                )
+            }
+        }
+        try persist()
+    }
+
     func markObservationProcessed(id: UUID, at date: Date) async throws {
         guard var value = try fetchObservation(id: id) else { return }
         value.processedAt = date
@@ -127,6 +212,78 @@ actor EncryptedSQLiteStore: LogRepository {
             try execute("DELETE FROM analysis_jobs WHERE observation_id = ?", [.text(id.uuidString)])
         }
         try persist()
+    }
+
+    func applyAnalysisMutation(_ mutation: AnalysisPersistenceMutation) async throws {
+        guard var observation = try fetchObservation(id: mutation.observationID) else { return }
+        observation.processedAt = mutation.processedAt
+        let observationPayload = try encoder.encode(observation)
+        let eventPayload = try mutation.event.map { try encoder.encode($0) }
+
+        let subjects = Dictionary(
+            mutation.subjects.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        ).values
+        let commitments = Dictionary(
+            mutation.commitments.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        ).values
+        var subjectPayloads: [(FollowUpSubject, Data)] = []
+        for subject in subjects {
+            try validate(subject)
+            subjectPayloads.append((subject, try encoder.encode(subject)))
+        }
+        var commitmentPayloads: [(Commitment, Data)] = []
+        for commitment in commitments {
+            try validate(commitment)
+            commitmentPayloads.append((commitment, try encoder.encode(commitment)))
+        }
+
+        let commit = {
+            try self.transaction {
+                if let event = mutation.event, let eventPayload {
+                    try self.upsertEvent(event, payload: eventPayload)
+                }
+                for (subject, payload) in subjectPayloads {
+                    try self.upsertFollowUpSubject(subject, payload: payload)
+                }
+                for (commitment, payload) in commitmentPayloads {
+                    let current = try self.fetchCommitment(id: commitment.id)
+                    let mayApply: Bool
+                    if let expectedRevision = mutation.expectedCommitmentRevisions[commitment.id] {
+                        mayApply = current?.updatedAt == expectedRevision
+                    } else {
+                        // New Luna Actions are insert-only. A UUID collision or a
+                        // concurrently-created record must never become an update.
+                        mayApply = current == nil
+                    }
+                    if mayApply {
+                        try self.upsertCommitment(commitment, payload: payload)
+                    }
+                }
+                if let refinement = mutation.refinement {
+                    try self.upsertRefinement(refinement, createdAt: mutation.processedAt)
+                }
+                try self.execute(
+                    "UPDATE observations SET processed_at = ?, payload = ? WHERE id = ?",
+                    [
+                        .double(mutation.processedAt.timeIntervalSince1970),
+                        .blob(observationPayload),
+                        .text(mutation.observationID.uuidString)
+                    ]
+                )
+                try self.execute(
+                    "DELETE FROM analysis_jobs WHERE observation_id = ?",
+                    [.text(mutation.observationID.uuidString)]
+                )
+            }
+            try self.persist()
+        }
+        if let authorization = mutation.captureCommitAuthorization {
+            try authorization.perform(commit)
+        } else {
+            try commit()
+        }
     }
 
     func observation(id: UUID) async throws -> Observation? {
@@ -157,7 +314,8 @@ actor EncryptedSQLiteStore: LogRepository {
     func claimAnalysisJobs(
         limit: Int,
         now: Date = Date(),
-        leaseDuration: TimeInterval = 10 * 60
+        leaseDuration: TimeInterval = 10 * 60,
+        sources: [ObservationSource]? = nil
     ) async throws -> [AnalysisJob] {
         let boundedLimit = max(0, limit)
         guard boundedLimit > 0 else { return [] }
@@ -173,18 +331,25 @@ actor EncryptedSQLiteStore: LogRepository {
                 """,
                 [.double(nowValue), .double(nowValue)]
             )
+            let sourceValues = (sources ?? []).sorted { $0.rawValue < $1.rawValue }
+            let sourceClause = sourceValues.isEmpty
+                ? ""
+                : " AND observation_id IN (SELECT id FROM observations WHERE source IN (\(sourceValues.map { _ in "?" }.joined(separator: ","))))"
             let statement = try prepare(
                 """
                 SELECT id, observation_id, state, attempts, next_attempt_at, lease_expires_at,
                        last_error_kind, last_error_message, created_at, updated_at
                 FROM analysis_jobs
-                WHERE state IN ('queued', 'retryable') AND next_attempt_at <= ?
+                WHERE state IN ('queued', 'retryable') AND next_attempt_at <= ?\(sourceClause)
                 ORDER BY next_attempt_at ASC, created_at ASC
                 LIMIT ?
                 """
             )
             defer { sqlite3_finalize(statement) }
-            try bind([.double(nowValue), .int(Int64(boundedLimit))], to: statement)
+            let bindings: [SQLiteBoundValue] = [.double(nowValue)]
+                + sourceValues.map { .text($0.rawValue) }
+                + [.int(Int64(boundedLimit))]
+            try bind(bindings, to: statement)
             while sqlite3_step(statement) == SQLITE_ROW {
                 guard let job = analysisJob(from: statement) else { continue }
                 jobs.append(job)
@@ -214,6 +379,62 @@ actor EncryptedSQLiteStore: LogRepository {
     func completeAnalysisJob(id: UUID) async throws {
         try execute("DELETE FROM analysis_jobs WHERE id = ?", [.text(id.uuidString)])
         try persist()
+    }
+
+    func discardAnalysisJobs(
+        observationIDs: [UUID],
+        processedAt: Date = Date()
+    ) async throws {
+        let identifiers = Array(Set(observationIDs))
+        guard !identifiers.isEmpty else { return }
+        try transaction {
+            for identifier in identifiers {
+                if var observation = try fetchObservation(id: identifier) {
+                    observation.processedAt = processedAt
+                    let payload = try encoder.encode(observation)
+                    try execute(
+                        "UPDATE observations SET processed_at = ?, payload = ? WHERE id = ?",
+                        [
+                            .double(processedAt.timeIntervalSince1970),
+                            .blob(payload),
+                            .text(identifier.uuidString)
+                        ]
+                    )
+                }
+                try execute(
+                    "DELETE FROM analysis_jobs WHERE observation_id = ?",
+                    [.text(identifier.uuidString)]
+                )
+            }
+        }
+        try persist()
+    }
+
+    func discardPendingAnalysisJobs(
+        sources: [ObservationSource],
+        processedAt: Date = Date()
+    ) async throws {
+        let sourceValues = sources.sorted { $0.rawValue < $1.rawValue }
+        guard !sourceValues.isEmpty else { return }
+        let placeholders = sourceValues.map { _ in "?" }.joined(separator: ",")
+        let statement = try prepare(
+            """
+            SELECT analysis_jobs.observation_id
+            FROM analysis_jobs
+            JOIN observations ON observations.id = analysis_jobs.observation_id
+            WHERE analysis_jobs.state IN ('queued', 'retryable', 'running', 'blockedCredentials')
+              AND observations.source IN (\(placeholders))
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(sourceValues.map { .text($0.rawValue) }, to: statement)
+        var identifiers: [UUID] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let value = string(at: 0, statement: statement), let id = UUID(uuidString: value) {
+                identifiers.append(id)
+            }
+        }
+        try await discardAnalysisJobs(observationIDs: identifiers, processedAt: processedAt)
     }
 
     func rescheduleAnalysisJob(
@@ -254,6 +475,67 @@ actor EncryptedSQLiteStore: LogRepository {
         try persist()
     }
 
+    /// A credential or project-spend failure applies to the API key, not to one
+    /// observation. Persist the block across both durable queues so a restart or
+    /// newly scheduled worker cannot hammer the same rejected credential.
+    func blockAllOpenAIJobs(
+        errorKind: AnalysisErrorKind = .credentials,
+        errorMessage: String?,
+        at date: Date = Date()
+    ) async throws {
+        let now = date.timeIntervalSince1970
+        let message = errorMessage.map { String($0.prefix(500)) }
+        try transaction {
+            for table in ["analysis_jobs", "refinement_jobs"] {
+                try execute(
+                    """
+                    UPDATE \(table)
+                    SET state = 'blockedCredentials', next_attempt_at = ?, lease_expires_at = NULL,
+                        last_error_kind = ?, last_error_message = ?, updated_at = ?
+                    WHERE state IN ('queued', 'retryable', 'running')
+                    """,
+                    [
+                        .double(Date.distantFuture.timeIntervalSince1970),
+                        .text(errorKind.rawValue),
+                        message.map(SQLiteBoundValue.text) ?? .null,
+                        .double(now)
+                    ]
+                )
+            }
+            try execute(
+                """
+                INSERT INTO runtime_flags (key, value, updated_at)
+                VALUES ('openai_work_blocked', '1', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                [.double(now)]
+            )
+        }
+        try persist()
+    }
+
+    func hasCredentialBlockedOpenAIJobs() async throws -> Bool {
+        let flag = try prepare(
+            "SELECT 1 FROM runtime_flags WHERE key = 'openai_work_blocked' AND value = '1' LIMIT 1"
+        )
+        defer { sqlite3_finalize(flag) }
+        if sqlite3_step(flag) == SQLITE_ROW { return true }
+        for table in ["analysis_jobs", "refinement_jobs"] {
+            let statement = try prepare("SELECT 1 FROM \(table) WHERE state = 'blockedCredentials' LIMIT 1")
+            defer { sqlite3_finalize(statement) }
+            if sqlite3_step(statement) == SQLITE_ROW { return true }
+        }
+        return false
+    }
+
+    func clearOpenAIWorkBlock(at date: Date = Date()) async throws {
+        try execute(
+            "DELETE FROM runtime_flags WHERE key = 'openai_work_blocked'",
+            []
+        )
+        try persist()
+    }
+
     func pendingAnalysisJobCount() async throws -> Int {
         let statement = try prepare(
             "SELECT COUNT(*) FROM analysis_jobs WHERE state NOT IN ('terminal')"
@@ -270,33 +552,28 @@ actor EncryptedSQLiteStore: LogRepository {
         notBefore: Date
     ) async throws {
         let now = Date()
+        try upsertRefinement(
+            AnalysisRefinementRequest(
+                eventID: eventID,
+                eventRevision: eventRevision,
+                isCritical: isCritical,
+                notBefore: notBefore
+            ),
+            createdAt: now
+        )
+        try persist()
+    }
+
+    func expediteMeetingRefinementJobs(at date: Date = Date()) async throws {
+        let value = date.timeIntervalSince1970
         try execute(
             """
-            INSERT INTO refinement_jobs (
-                id, event_id, event_revision, is_critical, state, attempts,
-                next_attempt_at, lease_expires_at, last_error_kind, last_error_message,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, 'queued', 0, ?, NULL, NULL, NULL, ?, ?)
-            ON CONFLICT(event_id) DO UPDATE SET
-                event_revision = excluded.event_revision,
-                is_critical = MAX(refinement_jobs.is_critical, excluded.is_critical),
-                state = 'queued',
-                attempts = 0,
-                next_attempt_at = excluded.next_attempt_at,
-                lease_expires_at = NULL,
-                last_error_kind = NULL,
-                last_error_message = NULL,
-                updated_at = excluded.updated_at
+            UPDATE refinement_jobs
+            SET next_attempt_at = MIN(next_attempt_at, ?), updated_at = ?
+            WHERE state IN ('queued', 'retryable')
+              AND event_id IN (SELECT id FROM events WHERE kind = 'meeting')
             """,
-            [
-                .text(UUID().uuidString),
-                .text(eventID.uuidString),
-                .double(eventRevision.timeIntervalSince1970),
-                .int(isCritical ? 1 : 0),
-                .double(notBefore.timeIntervalSince1970),
-                .double(now.timeIntervalSince1970),
-                .double(now.timeIntervalSince1970)
-            ]
+            [.double(value), .double(value)]
         )
         try persist()
     }
@@ -304,12 +581,12 @@ actor EncryptedSQLiteStore: LogRepository {
     func claimRefinementJobs(
         limit: Int,
         now: Date = Date(),
-        leaseDuration: TimeInterval = 20 * 60
+        leaseDuration: TimeInterval = 20 * 60,
+        criticalLeaseDuration: TimeInterval? = nil
     ) async throws -> [RefinementJob] {
         let boundedLimit = max(0, limit)
         guard boundedLimit > 0 else { return [] }
         let nowValue = now.timeIntervalSince1970
-        let leaseValue = now.addingTimeInterval(leaseDuration).timeIntervalSince1970
         var jobs: [RefinementJob] = []
         try transaction {
             try execute(
@@ -338,6 +615,8 @@ actor EncryptedSQLiteStore: LogRepository {
                 jobs.append(job)
             }
             for job in jobs {
+                let selectedDuration = job.isCritical ? (criticalLeaseDuration ?? leaseDuration) : leaseDuration
+                let leaseValue = now.addingTimeInterval(selectedDuration).timeIntervalSince1970
                 try execute(
                     """
                     UPDATE refinement_jobs
@@ -353,19 +632,63 @@ actor EncryptedSQLiteStore: LogRepository {
             var claimed = job
             claimed.state = .running
             claimed.attempts += 1
-            claimed.leaseExpiresAt = Date(timeIntervalSince1970: leaseValue)
+            let selectedDuration = job.isCritical ? (criticalLeaseDuration ?? leaseDuration) : leaseDuration
+            claimed.leaseExpiresAt = now.addingTimeInterval(selectedDuration)
             claimed.updatedAt = now
             return claimed
         }
     }
 
-    func completeRefinementJob(id: UUID) async throws {
-        try execute("DELETE FROM refinement_jobs WHERE id = ?", [.text(id.uuidString)])
+    func completeRefinementJob(id: UUID, eventRevision: Date) async throws {
+        try execute(
+            "DELETE FROM refinement_jobs WHERE id = ? AND event_revision = ?",
+            [.text(id.uuidString), .double(eventRevision.timeIntervalSince1970)]
+        )
         try persist()
+    }
+
+    func applyRefinementResult(
+        _ event: ActivityEvent,
+        expectedRevision: Date,
+        jobID: UUID
+    ) async throws -> Bool {
+        let expectedTimestamp = expectedRevision.timeIntervalSince1970
+        let jobMatches = try { () throws -> Bool in
+            let statement = try prepare(
+                "SELECT 1 FROM refinement_jobs WHERE id = ? AND event_id = ? AND event_revision = ? LIMIT 1"
+            )
+            defer { sqlite3_finalize(statement) }
+            try bind(
+                [.text(jobID.uuidString), .text(event.id.uuidString), .double(expectedTimestamp)],
+                to: statement
+            )
+            return sqlite3_step(statement) == SQLITE_ROW
+        }()
+        guard jobMatches else { return false }
+
+        let current = try fetchEvent(id: event.id)
+        let revisionMatches = current.map {
+            abs($0.updatedAt.timeIntervalSince(expectedRevision)) < 0.001
+        } ?? false
+        let payload = revisionMatches ? try encoder.encode(event) : nil
+        try transaction {
+            if revisionMatches, let payload {
+                try upsertEvent(event, payload: payload)
+            }
+            // A stale or deleted event still consumes this exact obsolete job.
+            // The revision predicate prevents acknowledgement of a newer job.
+            try execute(
+                "DELETE FROM refinement_jobs WHERE id = ? AND event_id = ? AND event_revision = ?",
+                [.text(jobID.uuidString), .text(event.id.uuidString), .double(expectedTimestamp)]
+            )
+        }
+        try persist()
+        return revisionMatches
     }
 
     func rescheduleRefinementJob(
         id: UUID,
+        eventRevision: Date,
         state: AnalysisJobState,
         nextAttemptAt: Date,
         errorKind: AnalysisErrorKind?,
@@ -376,7 +699,7 @@ actor EncryptedSQLiteStore: LogRepository {
             UPDATE refinement_jobs
             SET state = ?, next_attempt_at = ?, lease_expires_at = NULL,
                 last_error_kind = ?, last_error_message = ?, updated_at = ?
-            WHERE id = ?
+            WHERE id = ? AND event_revision = ?
             """,
             [
                 .text(state.rawValue),
@@ -384,8 +707,21 @@ actor EncryptedSQLiteStore: LogRepository {
                 errorKind.map { .text($0.rawValue) } ?? .null,
                 errorMessage.map(SQLiteBoundValue.text) ?? .null,
                 .double(Date().timeIntervalSince1970),
-                .text(id.uuidString)
+                .text(id.uuidString),
+                .double(eventRevision.timeIntervalSince1970)
             ]
+        )
+        try persist()
+    }
+
+    func unblockCredentialRefinementJobs(at date: Date = Date()) async throws {
+        try execute(
+            """
+            UPDATE refinement_jobs
+            SET state = 'retryable', next_attempt_at = ?, lease_expires_at = NULL, updated_at = ?
+            WHERE state = 'blockedCredentials'
+            """,
+            [.double(date.timeIntervalSince1970), .double(date.timeIntervalSince1970)]
         )
         try persist()
     }
@@ -393,43 +729,7 @@ actor EncryptedSQLiteStore: LogRepository {
     func saveEvent(_ event: ActivityEvent) async throws {
         let payload = try encoder.encode(event)
         try transaction {
-            try execute(
-                """
-                INSERT INTO events (id, started_at, ended_at, importance, status, kind, language, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    started_at = excluded.started_at,
-                    ended_at = excluded.ended_at,
-                    importance = excluded.importance,
-                    status = excluded.status,
-                    kind = excluded.kind,
-                    language = excluded.language,
-                    payload = excluded.payload
-                """,
-                [
-                    .text(event.id.uuidString),
-                    .double(event.startedAt.timeIntervalSince1970),
-                    .double(event.endedAt.timeIntervalSince1970),
-                    .int(Int64(event.importance.rawValue)),
-                    .text(event.status.rawValue),
-                    .text(event.kind.rawValue),
-                    .text(event.languageTag),
-                    .blob(payload)
-                ]
-            )
-            try execute("DELETE FROM event_fts WHERE id = ?", [.text(event.id.uuidString)])
-            try execute(
-                "INSERT INTO event_fts (id, title, summary, details, entities, urls, applications) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                [
-                    .text(event.id.uuidString),
-                    .text(event.title),
-                    .text(event.summary),
-                    .text(event.details),
-                    .text(event.entities.joined(separator: " ")),
-                    .text(event.urls.map(\.absoluteString).joined(separator: " ")),
-                    .text(event.sourceApplications.joined(separator: " "))
-                ]
-            )
+            try upsertEvent(event, payload: payload)
         }
         try persist()
     }
@@ -518,24 +818,7 @@ actor EncryptedSQLiteStore: LogRepository {
     func saveFollowUpSubject(_ subject: FollowUpSubject) async throws {
         try validate(subject)
         let payload = try encoder.encode(subject)
-        try execute(
-            """
-            INSERT INTO follow_up_subjects (id, name, area, updated_at, payload)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                name = excluded.name,
-                area = excluded.area,
-                updated_at = excluded.updated_at,
-                payload = excluded.payload
-            """,
-            [
-                .text(subject.id),
-                .text(subject.name),
-                .text(subject.area.rawValue),
-                .double(subject.updatedAt.timeIntervalSince1970),
-                .blob(payload)
-            ]
-        )
+        try upsertFollowUpSubject(subject, payload: payload)
         try persist()
     }
 
@@ -674,6 +957,245 @@ actor EncryptedSQLiteStore: LogRepository {
         try persist()
     }
 
+    func saveOpenAIUsageRecords(_ records: [OpenAIUsageRecord]) async throws {
+        guard !records.isEmpty else { return }
+        try transaction {
+            for record in records {
+                let payload = try encoder.encode(record)
+                let day = Self.utcDayKey(for: record.startedAt)
+                let estimatedCost = OpenAICostEstimator.estimatedCostUSD(for: record)
+                try execute(
+                    """
+                    INSERT OR IGNORE INTO api_usage_records (id, started_at, task, model, outcome, payload)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        .text(record.id.uuidString),
+                        .double(record.startedAt.timeIntervalSince1970),
+                        .text(record.task),
+                        .text(record.actualModel ?? record.requestedModel),
+                        .text(record.outcome.rawValue),
+                        .blob(payload)
+                    ]
+                )
+                guard let database, sqlite3_changes(database) > 0 else { continue }
+                try execute(
+                    """
+                    INSERT INTO api_usage_daily (
+                        day, price_version, request_count, input_tokens, cached_input_tokens, cache_write_tokens,
+                        output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd
+                    ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(day) DO UPDATE SET
+                        price_version = CASE
+                            WHEN price_version = excluded.price_version THEN price_version
+                            ELSE 'mixed'
+                        END,
+                        request_count = request_count + 1,
+                        input_tokens = input_tokens + excluded.input_tokens,
+                        cached_input_tokens = cached_input_tokens + excluded.cached_input_tokens,
+                        cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                        output_tokens = output_tokens + excluded.output_tokens,
+                        reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
+                        total_tokens = total_tokens + excluded.total_tokens,
+                        estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd
+                    """,
+                    [
+                        .text(day),
+                        .text(OpenAICostEstimator.priceVersion),
+                        .int(Int64(record.inputTokens ?? 0)),
+                        .int(Int64(record.cachedInputTokens ?? 0)),
+                        .int(Int64(record.cacheWriteTokens ?? 0)),
+                        .int(Int64(record.outputTokens ?? 0)),
+                        .int(Int64(record.reasoningTokens ?? 0)),
+                        .int(Int64(record.totalTokens ?? 0)),
+                        .double(estimatedCost)
+                    ]
+                )
+            }
+        }
+        try persist()
+    }
+
+    func openAIUsageRecords(since: Date, limit: Int = 10_000) async throws -> [OpenAIUsageRecord] {
+        let statement = try prepare(
+            "SELECT payload FROM api_usage_records WHERE started_at >= ? ORDER BY started_at DESC LIMIT ?"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind([.double(since.timeIntervalSince1970), .int(Int64(max(0, limit)))], to: statement)
+        var values: [OpenAIUsageRecord] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let payload = blob(at: 0, statement: statement) else { continue }
+            values.append(try decoder.decode(OpenAIUsageRecord.self, from: payload))
+        }
+        return values
+    }
+
+    func openAIUsageDailyAggregates(since: Date) async throws -> [OpenAIUsageDailyAggregate] {
+        let statement = try prepare(
+            """
+            SELECT day, price_version, request_count, input_tokens, cached_input_tokens, cache_write_tokens,
+                   output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd
+            FROM api_usage_daily WHERE day >= ? ORDER BY day ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind([.text(Self.utcDayKey(for: since))], to: statement)
+        var values: [OpenAIUsageDailyAggregate] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let day = string(at: 0, statement: statement) else { continue }
+            values.append(OpenAIUsageDailyAggregate(
+                day: day,
+                priceVersion: string(at: 1, statement: statement) ?? OpenAICostEstimator.priceVersion,
+                requestCount: Int(sqlite3_column_int64(statement, 2)),
+                inputTokens: Int(sqlite3_column_int64(statement, 3)),
+                cachedInputTokens: Int(sqlite3_column_int64(statement, 4)),
+                cacheWriteTokens: Int(sqlite3_column_int64(statement, 5)),
+                outputTokens: Int(sqlite3_column_int64(statement, 6)),
+                reasoningTokens: Int(sqlite3_column_int64(statement, 7)),
+                totalTokens: Int(sqlite3_column_int64(statement, 8)),
+                estimatedCostUSD: sqlite3_column_double(statement, 9)
+            ))
+        }
+        return values
+    }
+
+    func saveOptimizationTelemetryRecords(_ records: [OptimizationTelemetryRecord]) async throws {
+        guard !records.isEmpty else { return }
+        try transaction {
+            for record in records {
+                let payload = try encoder.encode(record)
+                let day = Self.utcDayKey(for: record.occurredAt)
+                try execute(
+                    """
+                    INSERT OR IGNORE INTO optimization_telemetry_records (
+                        id, occurred_at, metric, payload
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    [
+                        .text(record.id.uuidString),
+                        .double(record.occurredAt.timeIntervalSince1970),
+                        .text(record.metric.rawValue),
+                        .blob(payload)
+                    ]
+                )
+                guard let database, sqlite3_changes(database) > 0 else { continue }
+                try execute(
+                    """
+                    INSERT INTO optimization_telemetry_daily (
+                        day, metric, record_count, occurrence_count,
+                        total_latency_milliseconds, maximum_queue_depth
+                    ) VALUES (?, ?, 1, ?, ?, ?)
+                    ON CONFLICT(day, metric) DO UPDATE SET
+                        record_count = record_count + 1,
+                        occurrence_count = occurrence_count + excluded.occurrence_count,
+                        total_latency_milliseconds = total_latency_milliseconds + excluded.total_latency_milliseconds,
+                        maximum_queue_depth = MAX(maximum_queue_depth, excluded.maximum_queue_depth)
+                    """,
+                    [
+                        .text(day),
+                        .text(record.metric.rawValue),
+                        .int(Int64(record.occurrenceCount)),
+                        .int(Int64(record.latencyMilliseconds ?? 0)),
+                        .int(Int64(record.queueDepth ?? 0))
+                    ]
+                )
+            }
+        }
+        try persist()
+    }
+
+    func optimizationTelemetryRecords(
+        since: Date,
+        limit: Int = 10_000
+    ) async throws -> [OptimizationTelemetryRecord] {
+        let statement = try prepare(
+            """
+            SELECT payload FROM optimization_telemetry_records
+            WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind([.double(since.timeIntervalSince1970), .int(Int64(max(0, limit)))], to: statement)
+        var values: [OptimizationTelemetryRecord] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let payload = blob(at: 0, statement: statement) else { continue }
+            values.append(try decoder.decode(OptimizationTelemetryRecord.self, from: payload))
+        }
+        return values
+    }
+
+    func optimizationTelemetryDailyAggregates(
+        since: Date
+    ) async throws -> [OptimizationTelemetryDailyAggregate] {
+        let statement = try prepare(
+            """
+            SELECT day, metric, record_count, occurrence_count,
+                   total_latency_milliseconds, maximum_queue_depth
+            FROM optimization_telemetry_daily
+            WHERE day >= ? ORDER BY day ASC, metric ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind([.text(Self.utcDayKey(for: since))], to: statement)
+        var values: [OptimizationTelemetryDailyAggregate] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let day = string(at: 0, statement: statement),
+                  let metricValue = string(at: 1, statement: statement),
+                  let metric = OptimizationTelemetryMetric(rawValue: metricValue) else { continue }
+            values.append(OptimizationTelemetryDailyAggregate(
+                day: day,
+                metric: metric,
+                recordCount: Int(sqlite3_column_int64(statement, 2)),
+                occurrenceCount: Int(sqlite3_column_int64(statement, 3)),
+                totalLatencyMilliseconds: Int(sqlite3_column_int64(statement, 4)),
+                maximumQueueDepth: Int(sqlite3_column_int64(statement, 5))
+            ))
+        }
+        return values
+    }
+
+    func saveAppleShadowQualificationRecord(_ record: AppleShadowQualificationRecord) async throws {
+        let payload = try encoder.encode(record)
+        try execute(
+            """
+            INSERT OR REPLACE INTO apple_shadow_qualification_records (
+                id, observation_id, occurred_at, fingerprint, false_rejection,
+                critical_case, payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                .text(record.id.uuidString),
+                .text(record.observationID.uuidString),
+                .double(record.occurredAt.timeIntervalSince1970),
+                record.modelFingerprint.map { .text($0.stableIdentifier) } ?? .null,
+                .int(record.falseRejection ? 1 : 0),
+                .int(record.isCriticalCase ? 1 : 0),
+                .blob(payload)
+            ]
+        )
+        try persist()
+    }
+
+    func appleShadowQualificationRecords(
+        since: Date,
+        limit: Int = 10_000
+    ) async throws -> [AppleShadowQualificationRecord] {
+        let statement = try prepare(
+            """
+            SELECT payload FROM apple_shadow_qualification_records
+            WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind([.double(since.timeIntervalSince1970), .int(Int64(max(0, limit)))], to: statement)
+        var values: [AppleShadowQualificationRecord] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let payload = blob(at: 0, statement: statement) else { continue }
+            values.append(try decoder.decode(AppleShadowQualificationRecord.self, from: payload))
+        }
+        return values
+    }
+
     func purgeExpired(now: Date = Date(), retention: StructuredRetention) async throws {
         let expiredCompletedIDs: [UUID]
         if let interval = retention.cutoffInterval {
@@ -688,6 +1210,26 @@ actor EncryptedSQLiteStore: LogRepository {
         }
         try transaction {
             try execute("DELETE FROM observations WHERE expires_at <= ?", [.double(now.timeIntervalSince1970)])
+            try execute(
+                "DELETE FROM api_usage_records WHERE started_at < ?",
+                [.double(now.addingTimeInterval(-30 * 24 * 60 * 60).timeIntervalSince1970)]
+            )
+            try execute(
+                "DELETE FROM api_usage_daily WHERE day < ?",
+                [.text(Self.utcDayKey(for: now.addingTimeInterval(-90 * 24 * 60 * 60)))]
+            )
+            try execute(
+                "DELETE FROM optimization_telemetry_records WHERE occurred_at < ?",
+                [.double(now.addingTimeInterval(-30 * 24 * 60 * 60).timeIntervalSince1970)]
+            )
+            try execute(
+                "DELETE FROM optimization_telemetry_daily WHERE day < ?",
+                [.text(Self.utcDayKey(for: now.addingTimeInterval(-90 * 24 * 60 * 60)))]
+            )
+            try execute(
+                "DELETE FROM apple_shadow_qualification_records WHERE occurred_at < ?",
+                [.double(now.addingTimeInterval(-30 * 24 * 60 * 60).timeIntervalSince1970)]
+            )
             if let interval = retention.cutoffInterval {
                 let cutoff = now.addingTimeInterval(-interval).timeIntervalSince1970
                 let ids = try stringColumn(sql: "SELECT id FROM events WHERE ended_at < ?", arguments: [.double(cutoff)])
@@ -778,6 +1320,15 @@ actor EncryptedSQLiteStore: LogRepository {
         return Date(timeIntervalSince1970: sqlite3_column_double(statement, index))
     }
 
+    private nonisolated static func utcDayKey(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
     private func fetchObservation(id: UUID) throws -> Observation? {
         let statement = try prepare("SELECT payload FROM observations WHERE id = ? LIMIT 1")
         defer { sqlite3_finalize(statement) }
@@ -796,6 +1347,15 @@ actor EncryptedSQLiteStore: LogRepository {
         return try decoder.decode(ActivityEvent.self, from: data)
     }
 
+    private func fetchCommitment(id: UUID) throws -> Commitment? {
+        let statement = try prepare("SELECT payload FROM commitments WHERE id = ? LIMIT 1")
+        defer { sqlite3_finalize(statement) }
+        try bind([.text(id.uuidString)], to: statement)
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let data = blob(at: 0, statement: statement) else { return nil }
+        return try decoder.decode(Commitment.self, from: data)
+    }
+
     private func fetchEvents(sql: String, arguments: [SQLiteBoundValue]) throws -> [ActivityEvent] {
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
@@ -808,6 +1368,98 @@ actor EncryptedSQLiteStore: LogRepository {
             }
         }
         return values
+    }
+
+    private func upsertEvent(_ event: ActivityEvent, payload: Data) throws {
+        try execute(
+            """
+            INSERT INTO events (id, started_at, ended_at, importance, status, kind, language, payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                started_at = excluded.started_at,
+                ended_at = excluded.ended_at,
+                importance = excluded.importance,
+                status = excluded.status,
+                kind = excluded.kind,
+                language = excluded.language,
+                payload = excluded.payload
+            """,
+            [
+                .text(event.id.uuidString),
+                .double(event.startedAt.timeIntervalSince1970),
+                .double(event.endedAt.timeIntervalSince1970),
+                .int(Int64(event.importance.rawValue)),
+                .text(event.status.rawValue),
+                .text(event.kind.rawValue),
+                .text(event.languageTag),
+                .blob(payload)
+            ]
+        )
+        try execute("DELETE FROM event_fts WHERE id = ?", [.text(event.id.uuidString)])
+        try execute(
+            "INSERT INTO event_fts (id, title, summary, details, entities, urls, applications) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                .text(event.id.uuidString),
+                .text(event.title),
+                .text(event.summary),
+                .text(event.details),
+                .text(event.entities.joined(separator: " ")),
+                .text(event.urls.map(\.absoluteString).joined(separator: " ")),
+                .text(event.sourceApplications.joined(separator: " "))
+            ]
+        )
+    }
+
+    private func upsertFollowUpSubject(_ subject: FollowUpSubject, payload: Data) throws {
+        try execute(
+            """
+            INSERT INTO follow_up_subjects (id, name, area, updated_at, payload)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                area = excluded.area,
+                updated_at = excluded.updated_at,
+                payload = excluded.payload
+            """,
+            [
+                .text(subject.id),
+                .text(subject.name),
+                .text(subject.area.rawValue),
+                .double(subject.updatedAt.timeIntervalSince1970),
+                .blob(payload)
+            ]
+        )
+    }
+
+    private func upsertRefinement(_ request: AnalysisRefinementRequest, createdAt: Date) throws {
+        try execute(
+            """
+            INSERT INTO refinement_jobs (
+                id, event_id, event_revision, is_critical, state, attempts,
+                next_attempt_at, lease_expires_at, last_error_kind, last_error_message,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'queued', 0, ?, NULL, NULL, NULL, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+                event_revision = excluded.event_revision,
+                is_critical = MAX(refinement_jobs.is_critical, excluded.is_critical),
+                state = 'queued',
+                attempts = 0,
+                next_attempt_at = excluded.next_attempt_at,
+                lease_expires_at = NULL,
+                last_error_kind = NULL,
+                last_error_message = NULL,
+                updated_at = excluded.updated_at
+            """,
+            [
+                .text(UUID().uuidString),
+                .text(request.eventID.uuidString),
+                .double(request.eventRevision.timeIntervalSince1970),
+                .int(request.isCritical ? 1 : 0),
+                .double(request.notBefore.timeIntervalSince1970),
+                .double(createdAt.timeIntervalSince1970),
+                .double(createdAt.timeIntervalSince1970)
+            ]
+        )
     }
 
     private func upsertCommitment(_ commitment: Commitment, payload: Data) throws {
@@ -1061,6 +1713,10 @@ actor EncryptedSQLiteStore: LogRepository {
 
     private func persist() throws {
         guard let database else { throw SQLiteStoreError.openFailed("Database is closed") }
+        try Self.persistDatabase(database, to: databaseFile, crypto: crypto)
+    }
+
+    private static func persistDatabase(_ database: OpaquePointer, to url: URL, crypto: CryptoBox) throws {
         var size: sqlite3_int64 = 0
         guard let pointer = sqlite3_serialize(database, "main", &size, 0) else {
             throw SQLiteStoreError.serializationFailed
@@ -1068,7 +1724,7 @@ actor EncryptedSQLiteStore: LogRepository {
         defer { sqlite3_free(pointer) }
         let plain = Data(bytes: pointer, count: Int(size))
         let encrypted = try crypto.seal(plain, authenticating: Data("IrizSQLiteV1".utf8))
-        try encrypted.write(to: databaseFile, options: [.atomic, .completeFileProtection])
+        try EncryptedFileWriter.write(encrypted, to: url)
     }
 
     private static func loadEncryptedDatabase(from url: URL, into database: OpaquePointer, crypto: CryptoBox) throws {
@@ -1102,6 +1758,33 @@ actor EncryptedSQLiteStore: LogRepository {
             if let errorPointer { sqlite3_free(errorPointer) }
             throw SQLiteStoreError.sqlite(code: code, message: message, sql: sql)
         }
+    }
+
+    private static func applyAdditiveSchemaMigrations(on database: OpaquePointer) throws {
+        let sql = "SELECT COUNT(*) FROM pragma_table_info('api_usage_daily') WHERE name = 'price_version'"
+        var statement: OpaquePointer?
+        let prepareCode = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+        guard prepareCode == SQLITE_OK, let statement else {
+            throw SQLiteStoreError.sqlite(
+                code: prepareCode,
+                message: String(cString: sqlite3_errmsg(database)),
+                sql: sql
+            )
+        }
+        defer { sqlite3_finalize(statement) }
+        let stepCode = sqlite3_step(statement)
+        guard stepCode == SQLITE_ROW else {
+            throw SQLiteStoreError.sqlite(
+                code: stepCode,
+                message: String(cString: sqlite3_errmsg(database)),
+                sql: sql
+            )
+        }
+        guard sqlite3_column_int64(statement, 0) == 0 else { return }
+        try execute(
+            "ALTER TABLE api_usage_daily ADD COLUMN price_version TEXT NOT NULL DEFAULT '\(OpenAICostEstimator.priceVersion)'",
+            on: database
+        )
     }
 
     private static let schemaSQL = """
@@ -1178,6 +1861,11 @@ actor EncryptedSQLiteStore: LogRepository {
         );
         CREATE INDEX IF NOT EXISTS refinement_jobs_ready
             ON refinement_jobs(state, is_critical DESC, next_attempt_at, created_at);
+        CREATE TABLE IF NOT EXISTS runtime_flags (
+            key TEXT PRIMARY KEY NOT NULL,
+            value TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS commitments (
             id TEXT PRIMARY KEY NOT NULL,
             event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -1209,5 +1897,59 @@ actor EncryptedSQLiteStore: LogRepository {
             payload BLOB NOT NULL
         );
         CREATE INDEX IF NOT EXISTS assistant_conversations_updated_at ON assistant_conversations(updated_at DESC);
+        CREATE TABLE IF NOT EXISTS api_usage_records (
+            id TEXT PRIMARY KEY NOT NULL,
+            started_at REAL NOT NULL,
+            task TEXT NOT NULL,
+            model TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            payload BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS api_usage_records_started_at ON api_usage_records(started_at DESC);
+        CREATE INDEX IF NOT EXISTS api_usage_records_task_model ON api_usage_records(task, model, started_at DESC);
+        CREATE TABLE IF NOT EXISTS api_usage_daily (
+            day TEXT PRIMARY KEY NOT NULL,
+            price_version TEXT NOT NULL DEFAULT '\(OpenAICostEstimator.priceVersion)',
+            request_count INTEGER NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            cached_input_tokens INTEGER NOT NULL,
+            cache_write_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            reasoning_tokens INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            estimated_cost_usd REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS optimization_telemetry_records (
+            id TEXT PRIMARY KEY NOT NULL,
+            occurred_at REAL NOT NULL,
+            metric TEXT NOT NULL,
+            payload BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS optimization_telemetry_records_occurred_at
+            ON optimization_telemetry_records(occurred_at DESC);
+        CREATE INDEX IF NOT EXISTS optimization_telemetry_records_metric
+            ON optimization_telemetry_records(metric, occurred_at DESC);
+        CREATE TABLE IF NOT EXISTS optimization_telemetry_daily (
+            day TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            record_count INTEGER NOT NULL,
+            occurrence_count INTEGER NOT NULL,
+            total_latency_milliseconds INTEGER NOT NULL,
+            maximum_queue_depth INTEGER NOT NULL,
+            PRIMARY KEY(day, metric)
+        );
+        CREATE TABLE IF NOT EXISTS apple_shadow_qualification_records (
+            id TEXT PRIMARY KEY NOT NULL,
+            observation_id TEXT NOT NULL,
+            occurred_at REAL NOT NULL,
+            fingerprint TEXT,
+            false_rejection INTEGER NOT NULL,
+            critical_case INTEGER NOT NULL,
+            payload BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS apple_shadow_qualification_occurred_at
+            ON apple_shadow_qualification_records(occurred_at DESC);
+        CREATE INDEX IF NOT EXISTS apple_shadow_qualification_fingerprint
+            ON apple_shadow_qualification_records(fingerprint, occurred_at DESC);
         """
 }

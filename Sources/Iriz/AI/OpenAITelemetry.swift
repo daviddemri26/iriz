@@ -145,10 +145,15 @@ struct OpenAIResponseHeaders: Codable, Equatable, Sendable {
 
 struct OpenAIUsageRecord: Codable, Equatable, Sendable {
     let id: UUID
+    let logicalRequestID: String?
     let attemptID: UUID
+    /// One-based attempt number within a logical request. Optional so records
+    /// written by pre-optimization builds continue to decode.
+    let attemptNumber: Int?
     let startedAt: Date
     let durationSeconds: TimeInterval
     let task: String
+    let context: String
     let requestedModel: String
     let responseID: String?
     let actualModel: String?
@@ -178,10 +183,13 @@ struct OpenAIUsageRecord: Codable, Equatable, Sendable {
 
     init(
         id: UUID = UUID(),
+        logicalRequestID: String?,
         attemptID: UUID,
+        attemptNumber: Int = 1,
         startedAt: Date,
         durationSeconds: TimeInterval,
         task: String,
+        context: String,
         requestedModel: String,
         responseID: String?,
         actualModel: String?,
@@ -202,10 +210,13 @@ struct OpenAIUsageRecord: Codable, Equatable, Sendable {
         errorKind: String?
     ) {
         self.id = id
+        self.logicalRequestID = logicalRequestID
         self.attemptID = attemptID
+        self.attemptNumber = max(1, attemptNumber)
         self.startedAt = startedAt
         self.durationSeconds = durationSeconds
         self.task = task
+        self.context = context
         self.requestedModel = requestedModel
         self.responseID = responseID
         self.actualModel = actualModel
@@ -255,9 +266,26 @@ actor InMemoryOpenAIUsageRecorder: OpenAIUsageRecording {
     }
 }
 
+/// Propagates the durable queue attempt into every OpenAI request made while
+/// processing that job. Direct interactive requests keep the default first
+/// attempt, while an internal output-limit replay advances from this value.
+enum OpenAIDurableAttemptContext {
+    @TaskLocal static var number: Int = 1
+
+    /// Reserve two monotonic request ordinals per durable queue attempt: the
+    /// normal ceiling and its one allowed historical-ceiling replay. This
+    /// prevents a replay from colliding with the next durable retry.
+    static func base(forDurableAttempt attempt: Int) -> Int {
+        (max(1, attempt) - 1) * 2 + 1
+    }
+}
+
 struct OpenAIRequestTelemetryContext: Equatable, Sendable {
+    let logicalRequestID: String
     let attemptID: UUID
+    let attemptNumber: Int
     let task: String
+    let context: String
     let requestedModel: String
     let requestedServiceTier: String
     let reasoningEffort: String?
@@ -266,12 +294,21 @@ struct OpenAIRequestTelemetryContext: Equatable, Sendable {
     let imageCount: Int
     let audioDurationSeconds: TimeInterval?
 
-    static func response(task: String, body: Data) -> OpenAIRequestTelemetryContext {
+    static func response(
+        task: String,
+        context: String,
+        logicalRequestID: String,
+        attemptNumber: Int = 1,
+        body: Data
+    ) -> OpenAIRequestTelemetryContext {
         let root = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
         let reasoning = root?["reasoning"] as? [String: Any]
         return OpenAIRequestTelemetryContext(
+            logicalRequestID: logicalRequestID,
             attemptID: UUID(),
+            attemptNumber: max(1, attemptNumber),
             task: task,
+            context: context,
             requestedModel: root?["model"] as? String ?? "unknown",
             requestedServiceTier: root?["service_tier"] as? String ?? OpenAIServiceTier.default.rawValue,
             reasoningEffort: reasoning?["effort"] as? String,
@@ -282,10 +319,21 @@ struct OpenAIRequestTelemetryContext: Equatable, Sendable {
         )
     }
 
-    static func transcription(task: String, model: String, body: Data, wavData: Data) -> OpenAIRequestTelemetryContext {
+    static func transcription(
+        task: String,
+        context: String,
+        logicalRequestID: String,
+        attemptNumber: Int = 1,
+        model: String,
+        body: Data,
+        wavData: Data
+    ) -> OpenAIRequestTelemetryContext {
         OpenAIRequestTelemetryContext(
+            logicalRequestID: logicalRequestID,
             attemptID: UUID(),
+            attemptNumber: max(1, attemptNumber),
             task: task,
+            context: context,
             requestedModel: model,
             requestedServiceTier: OpenAIServiceTier.default.rawValue,
             reasoningEffort: nil,
