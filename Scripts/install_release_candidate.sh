@@ -4,7 +4,6 @@ set -euo pipefail
 PROJECT_ROOT="${0:A:h:h}"
 SOURCE_APP="${1:-$PROJECT_ROOT/build/Iriz.app}"
 DESTINATION_APP="${IRIZ_INSTALL_PATH:-/Applications/Iriz.app}"
-BACKUP_ROOT="$PROJECT_ROOT/build/previous-installations"
 
 if [[ "$DESTINATION_APP" != */Iriz.app ]]; then
   echo "Refusing unexpected installation target: $DESTINATION_APP" >&2
@@ -12,7 +11,6 @@ if [[ "$DESTINATION_APP" != */Iriz.app ]]; then
 fi
 
 "$PROJECT_ROOT/Scripts/verify_release_candidate.sh" "$SOURCE_APP"
-mkdir -p "$BACKUP_ROOT"
 
 if pgrep -x Iriz >/dev/null; then
   echo "Quit every running Iriz copy before installing the release candidate." >&2
@@ -32,9 +30,8 @@ if [[ -e "$DESTINATION_APP" ]]; then
     echo "Next: $NEXT_REQUIREMENT" >&2
     exit 1
   fi
-  BACKUP_APP="$BACKUP_ROOT/Iriz-$(date +%Y%m%d-%H%M%S).app"
-  mv "$DESTINATION_APP" "$BACKUP_APP"
-  echo "Previous installation preserved at $BACKUP_APP"
+  rm -rf "$DESTINATION_APP"
+  echo "Previous installation removed before replacement."
 fi
 
 ditto --norsrc "$SOURCE_APP" "$DESTINATION_APP"

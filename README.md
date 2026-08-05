@@ -49,7 +49,7 @@ CODE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 ./Scripts/install_release_candidate.sh  # installs /Applications/Iriz.app
 ```
 
-Always launch `/Applications/Iriz.app` for permission acceptance. Do not alternate with `.build`, `swift run`, or `build/Iriz.app`, because TCC evaluates the signed application identity and path. The installer preserves an existing app in `build/previous-installations/` before replacement and refuses an update if the designated code requirement changes.
+Always launch `/Applications/Iriz.app` for permission acceptance. Do not alternate with `.build`, `swift run`, or `build/Iriz.app`, because TCC evaluates the signed application identity and path. The installer removes the existing app before replacement and refuses an update if the designated code requirement changes.
 
 The critical local acceptance sequence is:
 
