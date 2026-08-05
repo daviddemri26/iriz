@@ -2,7 +2,7 @@ import SwiftUI
 
 enum ObservationControlMetrics {
     static let cardWidth: CGFloat = 276
-    static let cardHeight: CGFloat = 313
+    static let cardHeight: CGFloat = 252
     static let indicatorTopProtrusion: CGFloat = 22
     static let indicatorLeadingProtrusion: CGFloat = 6
     static let floatingWidth: CGFloat = cardWidth + indicatorLeadingProtrusion
@@ -136,13 +136,12 @@ struct ObservationControlCard: View {
 
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var settings: SettingsStore
-    @State private var noteText = ""
-    @State private var isAddingNote = false
 
     var placement: Placement = .sidebar
     var dragChanged: (() -> Void)?
     var dragEnded: (() -> Void)?
-    var interactionChanged: ((Bool) -> Void)?
+    var isPinned = false
+    var pinChanged: (() -> Void)?
 
     private var appearance: IndicatorPresentation { app.indicatorPresentation }
     private var settingsDestination: SettingsCategory? {
@@ -210,17 +209,14 @@ struct ObservationControlCard: View {
     }
 
     private var cardSurface: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            draggableHeader
+        VStack(alignment: .leading, spacing: 8) {
+            channelControls
             navigationActions
-            sectionDivider
-            captureActionSlot
-            sectionDivider
-            ObservationChannelsControl(presentation: .compact)
-            controlRow
-            footer
+            detailLevelRow
+            utilityActions
+            draggableStatusFooter
         }
-        .padding(13)
+        .padding(12)
         .frame(
             width: ObservationControlMetrics.cardWidth,
             height: ObservationControlMetrics.cardHeight,
@@ -240,9 +236,15 @@ struct ObservationControlCard: View {
         }
     }
 
-    @ViewBuilder private var draggableHeader: some View {
+    private var channelControls: some View {
+        ObservationChannelsControl(presentation: .compact)
+            .padding(.leading, 44)
+            .frame(height: 34)
+    }
+
+    @ViewBuilder private var draggableStatusFooter: some View {
         if placement == .floating {
-            statusHeader
+            statusFooter
                 .contentShape(Rectangle())
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 4)
@@ -250,131 +252,152 @@ struct ObservationControlCard: View {
                         .onEnded { _ in dragEnded?() }
                 )
         } else {
-            statusHeader
+            statusFooter
         }
     }
 
-    @ViewBuilder private var statusHeader: some View {
+    @ViewBuilder private var statusFooter: some View {
         if let settingsDestination {
             Button {
                 app.openSettings(category: settingsDestination)
             } label: {
-                statusHeaderContent
+                statusFooterContent
             }
             .buttonStyle(.plain)
             .help("Open Privacy settings")
             .accessibilityHint("Opens the Privacy category in Iriz Settings")
         } else {
-            statusHeaderContent
+            statusFooterContent
         }
     }
 
-    private var statusHeaderContent: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .top, spacing: 8) {
+    private var statusFooterContent: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(statusTint)
+                .frame(width: 7, height: 7)
+                .shadow(color: statusTint.opacity(0.34), radius: 3)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
                 Text(appearance.title)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(1)
-                    .padding(.leading, 42)
-                Spacer(minLength: 4)
-                Text(appearance.badge)
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .tracking(0.6)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .foregroundStyle(appearance.tint)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .frame(minWidth: 54)
-                    .background(appearance.tint.opacity(0.12), in: Capsule())
-                    .fixedSize(horizontal: true, vertical: false)
+                Text(statusDetail)
+                    .font(.system(size: 8.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
             }
-            Text(appearance.detail)
-                .font(.system(size: 9.5))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 2)
+            if settingsDestination != nil {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 60, maxHeight: 60, alignment: .topLeading)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, minHeight: 40, maxHeight: 40, alignment: .leading)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(statusTint.opacity(0.16))
+        }
         .contentShape(Rectangle())
+        .help(appearance.detail)
     }
 
-    private var sectionDivider: some View {
-        Divider()
-            .overlay(Color.primary.opacity(0.04))
+    private var statusTint: Color {
+        app.secureStorageState == .ready ? appearance.tint : Color.orange
+    }
+
+    private var statusDetail: String {
+        if app.secureStorageState != .ready {
+            return "Secure storage needs review"
+        }
+        if app.pendingCount > 0 {
+            return "\(app.pendingCount) waiting securely"
+        }
+        return appearance.detail
     }
 
     private var navigationActions: some View {
         HStack(spacing: 6) {
-            ControlShortcut(title: "Ask", symbol: "sparkles", tint: .primary) { app.openMainWindow(section: .assistant) }
-            ControlShortcut(title: "Follow Up", symbol: "checklist", tint: .primary) { app.openMainWindow(section: .followUp) }
-        }
-        .frame(height: 40)
-    }
-
-    @ViewBuilder private var captureActionSlot: some View {
-        Group {
-            if isAddingNote {
-                noteEditor
-            } else {
-                HStack(spacing: 6) {
-                    ControlShortcut(title: "Mark Moment", symbol: "bookmark.fill", tint: .primary) { Task { await app.markMoment() } }
-                    ControlShortcut(title: "Add Note", symbol: "square.and.pencil", tint: .secondary) {
-                        isAddingNote = true
-                        interactionChanged?(true)
-                    }
-                }
+            CompactFeatureShortcut(
+                title: "Follow Up",
+                symbol: "checkmark.circle.fill",
+                colors: [IrizTheme.observing, IrizTheme.mint]
+            ) {
+                app.openMainWindow(section: .followUp)
+            }
+            CompactFeatureShortcut(
+                title: "Ask",
+                symbol: "sparkles",
+                colors: [IrizTheme.violet, IrizTheme.coral]
+            ) {
+                app.openMainWindow(section: .assistant)
             }
         }
-        .frame(height: 38)
+        .frame(height: 48)
     }
 
-    private var noteEditor: some View {
-        HStack(spacing: 5) {
-            TextField("Add a note…", text: $noteText)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(saveNote)
-            Button {
-                noteText = ""
-                isAddingNote = false
-                interactionChanged?(false)
-            } label: {
-                Image(systemName: "xmark")
-                    .frame(width: 24, height: 24)
-            }
-            .buttonStyle(.plain)
-            .help("Cancel")
-            Button(action: saveNote) {
-                Image(systemName: "checkmark")
-                    .frame(width: 24, height: 24)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(IrizTheme.violet)
-            .disabled(noteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .help("Save note")
-        }
-        .controlSize(.small)
-    }
-
-    private var controlRow: some View {
-        HStack(spacing: 6) {
-            pauseButton
+    private var detailLevelRow: some View {
+        HStack(spacing: 8) {
+            Label("Follow-up detail", systemImage: "square.3.layers.3d")
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 2)
             detailLevelMenu
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 4)
+        .frame(maxWidth: .infinity, minHeight: 34, maxHeight: 34)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.06))
+        }
+    }
+
+    private var utilityActions: some View {
+        HStack(spacing: 7) {
+            pauseButton
+            Spacer(minLength: 0)
+            if placement == .floating {
+                pinButton
+            }
             Button {
                 app.openSettings()
             } label: {
                 Image(systemName: "gearshape.fill")
                     .font(.caption.weight(.semibold))
                     .frame(width: 34, height: 34)
-                    .background(Color.primary.opacity(0.065), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .background(Color.primary.opacity(0.065), in: Circle())
+                    .overlay(Circle().stroke(Color.primary.opacity(0.07)))
             }
             .buttonStyle(.plain)
             .help("Settings")
             .accessibilityLabel("Open Settings")
         }
         .frame(height: 34)
+    }
+
+    private var pinButton: some View {
+        Button {
+            pinChanged?()
+        } label: {
+            Image(systemName: isPinned ? "pin.fill" : "pin")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(isPinned ? Color.white : Color.primary)
+                .frame(width: 34, height: 34)
+                .background(isPinned ? IrizTheme.violet : Color.primary.opacity(0.065), in: Circle())
+                .overlay(Circle().stroke(isPinned ? Color.white.opacity(0.24) : Color.primary.opacity(0.07)))
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(.plain)
+        .help(isPinned ? "Unpin controls" : "Keep controls open")
+        .accessibilityLabel(isPinned ? "Unpin controls" : "Pin controls open")
+        .accessibilityValue(isPinned ? "Pinned" : "Not pinned")
     }
 
     private var detailLevelMenu: some View {
@@ -395,15 +418,16 @@ struct ObservationControlCard: View {
             }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: "square.3.layers.3d")
                 Text(settings.settings.followUpDetailLevel.displayName)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 7, weight: .bold))
             }
             .font(.caption2.weight(.semibold))
             .padding(.horizontal, 8)
-            .frame(minWidth: 86, minHeight: 34)
-            .background(Color.primary.opacity(0.065), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .frame(minWidth: 92, minHeight: 28)
+            .background(Color.primary.opacity(0.075), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .menuStyle(.borderlessButton)
         .fixedSize(horizontal: true, vertical: false)
@@ -415,52 +439,18 @@ struct ObservationControlCard: View {
         Button {
             app.setPaused(!settings.settings.isPaused)
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: settings.settings.isPaused ? "play.fill" : "pause.fill")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(appearance.tint)
-                Text(settings.settings.isPaused ? "Resume Iriz" : "Pause Iriz")
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                Spacer()
-            }
-            .padding(.horizontal, 11)
-            .frame(maxWidth: .infinity, minHeight: 34)
-            .foregroundStyle(Color.primary)
-            .background(Color.primary.opacity(0.075), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            Image(systemName: settings.settings.isPaused ? "play.fill" : "pause.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(settings.settings.isPaused ? IrizTheme.listening : appearance.tint)
+                .frame(width: 34, height: 34)
+                .background(Color.primary.opacity(0.075), in: Circle())
+                .overlay(Circle().stroke(appearance.tint.opacity(0.16)))
+                .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
+        .help(settings.settings.isPaused ? "Resume Iriz" : "Pause Iriz")
+        .accessibilityLabel(settings.settings.isPaused ? "Resume Iriz" : "Pause Iriz")
         .accessibilityHint(settings.settings.isPaused ? "Starts observation" : "Stops all observation")
-    }
-
-    private var footer: some View {
-        HStack(spacing: 5) {
-            if app.secureStorageState != .ready {
-                Image(systemName: "lock.trianglebadge.exclamationmark")
-                Text("Secure storage needs review")
-                    .lineLimit(1)
-            } else if app.pendingCount > 0 {
-                Image(systemName: "lock.fill")
-                Text("\(app.pendingCount) waiting securely")
-                    .lineLimit(1)
-            } else {
-                Color.clear
-            }
-            Spacer(minLength: 0)
-        }
-        .font(.caption2.weight(.medium))
-        .foregroundStyle(app.secureStorageState == .ready ? Color.secondary : Color.orange)
-        .frame(height: 14)
-    }
-
-    private func saveNote() {
-        let value = noteText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return }
-        noteText = ""
-        isAddingNote = false
-        interactionChanged?(false)
-        Task { await app.addNote(value) }
     }
 }
 
@@ -480,24 +470,50 @@ private struct StatusGlyph: View {
     }
 }
 
-private struct ControlShortcut: View {
+private struct CompactFeatureShortcut: View {
     let title: String
     let symbol: String
-    let tint: Color
+    let colors: [Color]
     let action: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
+            HStack(spacing: 7) {
                 Image(systemName: symbol)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(tint)
-                Text(title).font(.system(size: 9, weight: .medium)).lineLimit(1)
+                    .font(.system(size: 14, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                Text(title)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity, minHeight: 38)
-            .background(tint.opacity(0.075), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .foregroundStyle(Color.white.opacity(0.96))
+            .padding(.horizontal, 11)
+            .frame(maxWidth: .infinity, minHeight: 46)
+            .background {
+                ZStack(alignment: .trailing) {
+                    LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                    Circle()
+                        .fill(Color.white.opacity(0.11))
+                        .frame(width: 48, height: 48)
+                        .offset(x: 14, y: -13)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(Color.white.opacity(isHovered ? 0.34 : 0.16))
+            }
+            .shadow(color: colors.first?.opacity(isHovered ? 0.30 : 0.14) ?? .clear, radius: isHovered ? 8 : 4, y: 3)
+            .scaleEffect(isHovered ? 1.015 : 1)
         }
         .buttonStyle(.plain)
         .help(title)
+        .onHover { inside in
+            withAnimation(.easeOut(duration: 0.16)) {
+                isHovered = inside
+            }
+        }
     }
 }

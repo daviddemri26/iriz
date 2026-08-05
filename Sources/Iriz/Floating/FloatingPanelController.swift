@@ -14,6 +14,7 @@ enum FloatingVisibilityPolicy {
 @MainActor
 final class FloatingCapsuleModel: ObservableObject {
     @Published var isExpanded = false
+    @Published private(set) var isPinned = false
     @Published private(set) var isDragging = false
     @Published private(set) var actionsEnabled = false
     var resize: ((Bool) -> Void)?
@@ -24,7 +25,6 @@ final class FloatingCapsuleModel: ObservableObject {
     private var closeTask: Task<Void, Never>?
     private var actionsTask: Task<Void, Never>?
     private var isPointerInside = false
-    private var isInteractionActive = false
 
     func hover(_ inside: Bool) {
         isPointerInside = inside
@@ -39,9 +39,13 @@ final class FloatingCapsuleModel: ObservableObject {
                 expand()
             }
         } else {
+            guard !isPinned else { return }
             closeTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(550))
-                guard !Task.isCancelled, let self, !self.isInteractionActive, !self.isDragging else { return }
+                guard !Task.isCancelled,
+                      let self,
+                      !self.isPinned,
+                      !self.isDragging else { return }
                 self.actionsTask?.cancel()
                 self.actionsEnabled = false
                 self.isExpanded = false
@@ -72,10 +76,20 @@ final class FloatingCapsuleModel: ObservableObject {
         closeTask?.cancel()
         actionsTask?.cancel()
         isPointerInside = false
-        isInteractionActive = false
         actionsEnabled = false
         isExpanded = false
         resize?(false)
+    }
+
+    func togglePinned() {
+        isPinned.toggle()
+        closeTask?.cancel()
+        closeTask = nil
+        if isPinned {
+            expand()
+        } else if !isPointerInside {
+            hover(false)
+        }
     }
 
     func dragChanged() {
@@ -96,14 +110,6 @@ final class FloatingCapsuleModel: ObservableObject {
         hover(isPointerInside)
     }
 
-    func setInteractionActive(_ active: Bool) {
-        isInteractionActive = active
-        if active {
-            closeTask?.cancel()
-        } else if !isPointerInside {
-            hover(false)
-        }
-    }
 }
 
 @MainActor
@@ -165,6 +171,9 @@ final class FloatingPanelController {
     func setVisible(_ isVisible: Bool) {
         if isVisible {
             panel.orderFrontRegardless()
+            if model.isPinned {
+                model.expand()
+            }
         } else {
             model.collapse()
             panel.orderOut(nil)

@@ -45,7 +45,8 @@ struct FloatingCapsuleView: View {
             placement: .floating,
             dragChanged: model.dragChanged,
             dragEnded: model.dragEnded,
-            interactionChanged: model.setInteractionActive
+            isPinned: model.isPinned,
+            pinChanged: model.togglePinned
         )
         .overlay {
             if !model.actionsEnabled {

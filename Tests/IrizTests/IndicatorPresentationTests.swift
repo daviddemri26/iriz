@@ -172,8 +172,8 @@ struct IndicatorPresentationTests {
         #expect(IrizIndicatorMetrics.collapsedPanelSize == 60)
         #expect(ObservationControlMetrics.cardWidth == 276)
         #expect(ObservationControlMetrics.floatingWidth == 282)
-        #expect(ObservationControlMetrics.cardHeight == 313)
-        #expect(ObservationControlMetrics.floatingHeight == 335)
+        #expect(ObservationControlMetrics.cardHeight == 252)
+        #expect(ObservationControlMetrics.floatingHeight == 274)
     }
 
     @Test("Permission status routes directly to Privacy")
@@ -202,6 +202,30 @@ struct IndicatorPresentationTests {
             settingEnabled: false,
             mainWindowPresented: false
         ))
+    }
+
+    @Test("Pin keeps the expanded controls open after the pointer leaves")
+    @MainActor
+    func floatingPin() async {
+        let model = FloatingCapsuleModel()
+        var resizeTransitions: [Bool] = []
+        model.resize = { resizeTransitions.append($0) }
+
+        model.expand()
+        model.togglePinned()
+        model.hover(false)
+        try? await Task.sleep(for: .milliseconds(650))
+
+        #expect(model.isExpanded)
+        #expect(model.isPinned)
+        #expect(resizeTransitions.last == true)
+
+        model.togglePinned()
+        try? await Task.sleep(for: .milliseconds(650))
+
+        #expect(!model.isExpanded)
+        #expect(!model.isPinned)
+        #expect(resizeTransitions.last == false)
     }
 
     @Test("The application exposes one maximized main window")
