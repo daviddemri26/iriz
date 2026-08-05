@@ -50,7 +50,7 @@ struct FollowUpDetailLevelTests {
             let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
             let input = try #require(object["input"] as? [[String: Any]])
             let content = try #require(input.first?["content"] as? [[String: Any]])
-            let prompt = try #require(content.first?["text"] as? String)
+            let prompt = content.compactMap { $0["text"] as? String }.joined(separator: "\n")
 
             #expect(prompt.contains("Detail level for newly created Actions: \(level.displayName)"))
             #expect(prompt.contains(try #require(expectedGuidance[level])))

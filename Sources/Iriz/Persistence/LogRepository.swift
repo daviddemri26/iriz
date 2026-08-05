@@ -5,6 +5,33 @@ protocol LogRepository: Sendable {
     func markObservationProcessed(id: UUID, at date: Date) async throws
     func observation(id: UUID) async throws -> Observation?
     func pendingObservations(limit: Int) async throws -> [Observation]
+    func enqueueAnalysis(observationID: UUID, at date: Date) async throws
+    func claimAnalysisJobs(limit: Int, now: Date, leaseDuration: TimeInterval) async throws -> [AnalysisJob]
+    func completeAnalysisJob(id: UUID) async throws
+    func rescheduleAnalysisJob(
+        id: UUID,
+        state: AnalysisJobState,
+        nextAttemptAt: Date,
+        errorKind: AnalysisErrorKind?,
+        errorMessage: String?
+    ) async throws
+    func unblockCredentialAnalysisJobs(at date: Date) async throws
+    func pendingAnalysisJobCount() async throws -> Int
+    func enqueueRefinement(
+        eventID: UUID,
+        eventRevision: Date,
+        isCritical: Bool,
+        notBefore: Date
+    ) async throws
+    func claimRefinementJobs(limit: Int, now: Date, leaseDuration: TimeInterval) async throws -> [RefinementJob]
+    func completeRefinementJob(id: UUID) async throws
+    func rescheduleRefinementJob(
+        id: UUID,
+        state: AnalysisJobState,
+        nextAttemptAt: Date,
+        errorKind: AnalysisErrorKind?,
+        errorMessage: String?
+    ) async throws
     func saveEvent(_ event: ActivityEvent) async throws
     func event(id: UUID) async throws -> ActivityEvent?
     func events(limit: Int, importantOnly: Bool) async throws -> [ActivityEvent]

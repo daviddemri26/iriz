@@ -53,9 +53,9 @@ final class AppState: ObservableObject {
     let indicatorActivities: IndicatorActivityStore
     private let ai: any AIProviding
     private let screenCapture = ScreenCaptureService()
+    private let screenBatcher = ScreenObservationBatcher()
     private let audioCapture = AudioCaptureService()
     private let systemAudioCapture = SystemAudioCaptureService()
-    private let ocr = VisionOCRService()
     private let notifications = NotificationService()
     private let followUpExporter = FollowUpExportService()
     private var maintenanceTask: Task<Void, Never>?
@@ -66,6 +66,8 @@ final class AppState: ObservableObject {
     private var isComposingNewAssistantConversation = false
     private var indicatorSnapshotCancellable: AnyCancellable?
     private var apiKeyStateCancellable: AnyCancellable?
+    private var isDrainingAnalysisQueue = false
+    private var isDrainingRefinementQueue = false
 
     init(
         ai: (any AIProviding)? = nil,
@@ -121,6 +123,9 @@ final class AppState: ObservableObject {
         }
         await refresh()
         await cleanup()
+        await screenBatcher.start { @Sendable batch in
+            await AppState.shared.processScreenBatch(batch)
+        }
         await screenCapture.start(
             settingsProvider: { @Sendable in
                 await MainActor.run { SettingsStore.shared.settings }
@@ -368,7 +373,10 @@ final class AppState: ObservableObject {
         settingsStore.settings.isPaused = paused
         if paused {
             audioCapture.stop()
-            Task { await systemAudioCapture.stop() }
+            Task {
+                await screenBatcher.cancel()
+                await systemAudioCapture.stop()
+            }
         } else {
             guard secureStorageState == .ready else {
                 captureHealth = .permissionNeeded("Keychain access")
@@ -503,7 +511,10 @@ final class AppState: ObservableObject {
             // after the active context turns private or unavailable.
             lastScreenContext = nil
             lastScreenJPEG = nil
-            Task { await systemAudioCapture.stop() }
+            Task {
+                await screenBatcher.cancel()
+                await systemAudioCapture.stop()
+            }
         }
         captureHealth = configuredCaptureHealth
     }
@@ -515,39 +526,44 @@ final class AppState: ObservableObject {
     }
 
     func processScreenFrame(_ frame: CapturedScreenFrame) async {
+        guard !settingsStore.settings.isPaused else { return }
+        await screenBatcher.submit(frame)
+    }
+
+    func processScreenBatch(_ batch: BatchedScreenObservation) async {
         guard !settingsStore.settings.isPaused, let repository, let mediaStore else { return }
-        let activityContext: IndicatorActivityContext = frame.context.isMeeting ? .meeting : .screen
+        let activityContext: IndicatorActivityContext = batch.context.isMeeting ? .meeting : .screen
         let activityToken = indicatorActivities.beginLocal(
-            IndicatorLocalActivityDescriptor(context: activityContext, startedAt: frame.capturedAt)
+            IndicatorLocalActivityDescriptor(context: activityContext, startedAt: batch.capturedAt)
         )
         defer { indicatorActivities.finishLocal(activityToken) }
         indicatorActivities.setScreenVisibility(.available)
         if !hasPersistentIndicatorIssue {
-            captureHealth = frame.context.isMeeting ? .meeting : configuredCaptureHealth
+            captureHealth = batch.context.isMeeting ? .meeting : configuredCaptureHealth
         }
-        lastScreenJPEG = frame.jpegData
-        lastScreenContext = frame.context
+        lastScreenJPEG = batch.jpegData
+        lastScreenContext = batch.context
         do {
-            async let recognized = ocr.recognizeText(in: frame.image)
-            let expiresAt = frame.capturedAt.addingTimeInterval(TimeInterval(settingsStore.settings.mediaRetentionHours * 3_600))
-            let mediaID = try await mediaStore.store(frame.jpegData, fileExtension: "jpg", expiresAt: expiresAt)
-            let text = ExclusionPolicy.redactSensitiveText(try await recognized)
+            let expiresAt = batch.capturedAt.addingTimeInterval(
+                TimeInterval(settingsStore.settings.mediaRetentionHours * 3_600)
+            )
+            let mediaID = try await mediaStore.store(batch.jpegData, fileExtension: "jpg", expiresAt: expiresAt)
             let observation = Observation(
                 source: .screen,
-                capturedAt: frame.capturedAt,
+                capturedAt: batch.capturedAt,
                 expiresAt: expiresAt,
-                applicationName: frame.context.applicationName,
-                bundleIdentifier: frame.context.bundleIdentifier,
-                windowTitle: frame.context.windowTitle,
-                url: frame.context.url,
-                text: text,
+                applicationName: batch.context.applicationName,
+                bundleIdentifier: batch.context.bundleIdentifier,
+                windowTitle: batch.context.windowTitle,
+                url: batch.context.url,
+                text: batch.text,
                 mediaIdentifier: mediaID,
-                contentFingerprint: frame.signature.digest,
-                isMeeting: frame.context.isMeeting
+                contentFingerprint: batch.contentFingerprint,
+                isMeeting: batch.context.isMeeting
             )
             try await repository.saveObservation(observation)
-            pendingCount += 1
-            await analyze(observation: observation, mediaData: frame.jpegData)
+            pendingCount = try await repository.pendingAnalysisJobCount()
+            await drainAnalysisQueue()
         } catch {
             handleProcessingError(error, context: activityContext)
         }
@@ -593,7 +609,7 @@ final class AppState: ObservableObject {
                 isMeeting: lastScreenContext?.isMeeting ?? false
             )
             try await repository.saveObservation(observation)
-            pendingCount += 1
+            pendingCount = try await repository.pendingAnalysisJobCount()
             guard let key = try settingsStore.apiKey() else { return }
             let transcript = try await ai.transcribe(
                 wavData: wavData,
@@ -604,7 +620,7 @@ final class AppState: ObservableObject {
             )
             observation.text = ExclusionPolicy.redactSensitiveText(transcript)
             try await repository.saveObservation(observation)
-            await analyze(observation: observation, mediaData: nil)
+            await drainAnalysisQueue()
         } catch {
             handleProcessingError(error, context: activityContext)
         }
@@ -635,7 +651,7 @@ final class AppState: ObservableObject {
                 isMeeting: true
             )
             try await repository.saveObservation(observation)
-            pendingCount += 1
+            pendingCount = try await repository.pendingAnalysisJobCount()
             guard let key = try settingsStore.apiKey() else { return }
             observation.text = ExclusionPolicy.redactSensitiveText(try await ai.transcribe(
                 wavData: wavData,
@@ -645,7 +661,7 @@ final class AppState: ObservableObject {
                 apiKey: key
             ))
             try await repository.saveObservation(observation)
-            await analyze(observation: observation, mediaData: nil)
+            await drainAnalysisQueue()
         } catch {
             handleProcessingError(error, context: .meeting)
         }
@@ -655,30 +671,54 @@ final class AppState: ObservableObject {
     }
 
     func retryPending() async {
-        guard let repository, let mediaStore, (try? settingsStore.apiKey()) != nil else { return }
+        await drainAnalysisQueue()
+        await drainRefinementQueue()
+    }
+
+    private func drainAnalysisQueue() async {
+        guard !isDrainingAnalysisQueue,
+              !settingsStore.settings.isPaused,
+              let repository,
+              let mediaStore,
+              (try? settingsStore.apiKey()) != nil else { return }
+        isDrainingAnalysisQueue = true
+        defer { isDrainingAnalysisQueue = false }
+
         do {
-            let pending = try await repository.pendingObservations(limit: 25)
-            pendingCount = pending.count
-            for var observation in pending where observation.expiresAt > Date() {
+            let jobs = try await repository.claimAnalysisJobs(limit: 2, now: Date(), leaseDuration: 10 * 60)
+            for job in jobs {
+                guard var observation = try await repository.observation(id: job.observationID),
+                      observation.expiresAt > Date() else {
+                    try await repository.completeAnalysisJob(id: job.id)
+                    continue
+                }
                 var media: Data?
                 if let identifier = observation.mediaIdentifier {
                     media = try? await mediaStore.read(identifier: identifier)
                 }
-                if observation.source != .screen, observation.text.isEmpty, let media,
-                   let key = try settingsStore.apiKey() {
-                    observation.text = try await ai.transcribe(
-                        wavData: media,
-                        diarize: observation.isMeeting,
-                        languageTag: settingsStore.settings.outputLanguageTag,
-                        knownSpeakerReference: observation.isMeeting ? try settingsStore.voiceReference() : nil,
-                        apiKey: key
+                do {
+                    if observation.source != .screen, observation.text.isEmpty, let media,
+                       let key = try settingsStore.apiKey() {
+                        observation.text = ExclusionPolicy.redactSensitiveText(try await ai.transcribe(
+                            wavData: media,
+                            diarize: observation.isMeeting,
+                            languageTag: settingsStore.settings.outputLanguageTag,
+                            knownSpeakerReference: observation.isMeeting ? try settingsStore.voiceReference() : nil,
+                            apiKey: key
+                        ))
+                        try await repository.saveObservation(observation)
+                    }
+                    try await analyze(
+                        observation: observation,
+                        mediaData: observation.source == .screen ? media : nil
                     )
-                    try await repository.saveObservation(observation)
-                    await analyze(observation: observation, mediaData: nil)
-                } else {
-                    await analyze(observation: observation, mediaData: media)
+                    try await repository.completeAnalysisJob(id: job.id)
+                } catch {
+                    try await rescheduleAnalysis(job: job, after: error)
+                    handleProcessingError(error, context: Self.indicatorContext(for: observation))
                 }
             }
+            pendingCount = try await repository.pendingAnalysisJobCount()
         } catch {
             handleProcessingError(error, context: .followUp)
         }
@@ -1513,6 +1553,9 @@ final class AppState: ObservableObject {
             if secureStorageState == .ready {
                 captureHealth = configuredCaptureHealth
             }
+            if let repository {
+                try await repository.unblockCredentialAnalysisJobs(at: Date())
+            }
             await retryPending()
         } catch {
             if let clientError = error as? OpenAIClientError, clientError.isInvalidCredential {
@@ -1546,6 +1589,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    func updateDailyDigestSchedule() {
+        let hour = settingsStore.settings.dailyDigestHour
+        let enabled = settingsStore.settings.dailyDigestEnabled
+        Task {
+            await notifications.configureDailyDigest(hour: hour, enabled: enabled)
+        }
+    }
+
     func exportMemory(format: ExportFormat) async {
         guard let repository else { return }
         do {
@@ -1560,10 +1611,9 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func analyze(observation: Observation, mediaData: Data?) async {
+    private func analyze(observation: Observation, mediaData: Data?) async throws {
         guard let repository else { return }
-        do {
-            guard let key = try settingsStore.apiKey() else { return }
+        guard let key = try settingsStore.apiKey() else { return }
             var shouldHighlightFollowUp = false
             // Keep one immutable creation policy for the entire request. If the
             // user changes the menu while the network call is in flight, the
@@ -1606,24 +1656,22 @@ final class AppState: ObservableObject {
                 let localConsolidation = await consolidate(event)
                 let shouldRefine = interpretation.event != nil && (localConsolidation.importance >= .important
                     || localConsolidation.status == .completed
-                    || localConsolidation.kind == .meeting
-                    || !interpretation.commitments.isEmpty)
-                let consolidated: ActivityEvent
-                if shouldRefine {
-                    do {
-                        consolidated = try await ai.refine(
-                            event: localConsolidation,
-                            outputLanguage: settingsStore.outputLanguagePrompt(),
-                            apiKey: key
-                        )
-                    } catch {
-                        handleProcessingError(error, context: Self.indicatorContext(for: observation))
-                        consolidated = localConsolidation
-                    }
-                } else {
-                    consolidated = localConsolidation
-                }
+                    || localConsolidation.kind == .meeting)
+                let consolidated = localConsolidation
+                // The Luna/local result is durable and visible immediately. Terra
+                // refines a revisioned copy in the background and can never block
+                // this observation or overwrite a newer user edit.
                 try await repository.saveEvent(consolidated)
+                if shouldRefine {
+                    let isCritical = consolidated.status == .completed || consolidated.importance == .critical
+                    let delay: TimeInterval = isCritical ? 0 : (consolidated.kind == .meeting ? 5 * 60 : 30)
+                    try await repository.enqueueRefinement(
+                        eventID: consolidated.id,
+                        eventRevision: consolidated.updatedAt,
+                        isCritical: isCritical,
+                        notBefore: Date().addingTimeInterval(delay)
+                    )
+                }
                 var openCommitments = try await repository.commitments(includingClosed: false)
                 let locallyRelated = CommitmentLinker.relatedCandidates(
                     for: consolidated,
@@ -1799,13 +1847,9 @@ final class AppState: ObservableObject {
                     indicatorActivities.emitSuccess(context: .followUp)
                 }
             }
-            try await repository.markObservationProcessed(id: observation.id, at: Date())
-            pendingCount = max(0, pendingCount - 1)
-            await refresh()
-        } catch {
-            // The encrypted observation remains pending and can be retried until its 24-hour expiry.
-            handleProcessingError(error, context: Self.indicatorContext(for: observation))
-        }
+        try await repository.markObservationProcessed(id: observation.id, at: Date())
+        pendingCount = max(0, pendingCount - 1)
+        await refresh()
     }
 
     private func consolidate(_ proposed: ActivityEvent) async -> ActivityEvent {
@@ -1840,9 +1884,10 @@ final class AppState: ObservableObject {
         configureAudio()
         await cleanup()
         if !settingsStore.settings.isPaused { await retryPending() }
-        if settingsStore.settings.dailyDigestEnabled {
-            await notifications.configureDailyDigest(hour: settingsStore.settings.dailyDigestHour, enabled: true)
-        }
+        await notifications.configureDailyDigest(
+            hour: settingsStore.settings.dailyDigestHour,
+            enabled: settingsStore.settings.dailyDigestEnabled
+        )
     }
 
     private var hasPersistentIndicatorIssue: Bool {

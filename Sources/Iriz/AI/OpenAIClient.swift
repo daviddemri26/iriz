@@ -13,6 +13,8 @@ struct OpenAIModelConfiguration: Equatable, Sendable {
     let reasoningEffort: OpenAIReasoningEffort
     let maxOutputTokens: Int
     let activityLevel: IndicatorAPILevel
+    let serviceTier: OpenAIServiceTier
+    let textVerbosity: OpenAITextVerbosity
 }
 
 enum OpenAITask: String, CaseIterable, Equatable, Sendable {
@@ -37,37 +39,69 @@ enum OpenAIModelPolicy {
                 model: frequentAnalysis,
                 reasoningEffort: .none,
                 maxOutputTokens: 8,
-                activityLevel: .routine
+                activityLevel: .routine,
+                serviceTier: .default,
+                textVerbosity: .low
             )
         case .observationClassification:
             OpenAIModelConfiguration(
                 model: frequentAnalysis,
                 reasoningEffort: .none,
                 maxOutputTokens: 2_400,
-                activityLevel: .routine
+                activityLevel: .routine,
+                serviceTier: .default,
+                textVerbosity: .low
             )
-        case .eventConsolidation, .followUpMerge:
+        case .eventConsolidation:
             OpenAIModelConfiguration(
                 model: consolidation,
                 reasoningEffort: .low,
                 maxOutputTokens: 1_400,
-                activityLevel: .intensive
+                activityLevel: .intensive,
+                serviceTier: .flex,
+                textVerbosity: .low
+            )
+        case .followUpMerge:
+            OpenAIModelConfiguration(
+                model: consolidation,
+                reasoningEffort: .low,
+                maxOutputTokens: 1_400,
+                activityLevel: .intensive,
+                serviceTier: .default,
+                textVerbosity: .low
             )
         case .assistantAnswer:
             OpenAIModelConfiguration(
                 model: consolidation,
                 reasoningEffort: .low,
                 maxOutputTokens: 1_200,
-                activityLevel: .intensive
+                activityLevel: .intensive,
+                serviceTier: .default,
+                textVerbosity: .low
             )
         case .complexAssistantAnswer:
             OpenAIModelConfiguration(
                 model: consolidation,
                 reasoningEffort: .medium,
                 maxOutputTokens: 1_600,
-                activityLevel: .intensive
+                activityLevel: .intensive,
+                serviceTier: .default,
+                textVerbosity: .medium
             )
         }
+    }
+
+    static func refinementConfiguration(for event: ActivityEvent) -> OpenAIModelConfiguration {
+        let normal = configuration(for: .eventConsolidation)
+        guard event.status == .completed || event.importance == .critical else { return normal }
+        return OpenAIModelConfiguration(
+            model: normal.model,
+            reasoningEffort: normal.reasoningEffort,
+            maxOutputTokens: normal.maxOutputTokens,
+            activityLevel: normal.activityLevel,
+            serviceTier: .default,
+            textVerbosity: normal.textVerbosity
+        )
     }
 
     static func assistantConfiguration(question: String, candidateCount: Int) -> OpenAIModelConfiguration {
@@ -170,15 +204,18 @@ actor OpenAIClient: AIProviding {
     private let baseURL: URL
     private let indicatorActivities: IndicatorActivityStore?
     private let dataLoader: OpenAIDataLoader
+    private let usageRecorder: any OpenAIUsageRecording
 
     init(
         session: URLSession = .shared,
         baseURL: URL = URL(string: "https://api.openai.com/v1")!,
         indicatorActivities: IndicatorActivityStore? = nil,
+        usageRecorder: any OpenAIUsageRecording = NoOpOpenAIUsageRecorder(),
         dataLoader: OpenAIDataLoader? = nil
     ) {
         self.baseURL = baseURL
         self.indicatorActivities = indicatorActivities
+        self.usageRecorder = usageRecorder
         self.dataLoader = dataLoader ?? { request in
             try await session.data(for: request)
         }
@@ -321,7 +358,7 @@ actor OpenAIClient: AIProviding {
             event: normalizedEvent,
             commitments: commitments,
             needsOriginalImage: draft.needsOriginalImage,
-            explanation: draft.explanation
+            explanation: ""
         )
     }
 
@@ -375,9 +412,9 @@ actor OpenAIClient: AIProviding {
         )
         let data = try await post(path: "responses", body: body, apiKey: apiKey, activity: descriptor)
         let output = try Self.outputText(from: data)
-        let payload: EventPayload
+        let payload: EventRefinementPayload
         do {
-            payload = try JSONDecoder().decode(EventPayload.self, from: Data(output.utf8))
+            payload = try JSONDecoder().decode(EventRefinementPayload.self, from: Data(output.utf8))
         } catch {
             throw OpenAIClientError.malformedStructuredOutput
         }
@@ -445,6 +482,8 @@ actor OpenAIClient: AIProviding {
         knownSpeakerReference: Data?,
         apiKey: String
     ) async throws -> String {
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else { throw OpenAIClientError.missingAPIKey }
         let boundary = "Iriz-\(UUID().uuidString)"
         let model = diarize ? OpenAIModelPolicy.diarizedTranscription : OpenAIModelPolicy.transcription
         let body = OpenAIRequestFactory.transcriptionRequest(
@@ -456,14 +495,20 @@ actor OpenAIClient: AIProviding {
         )
         var request = URLRequest(url: baseURL.appendingPathComponent("audio/transcriptions"))
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
         let descriptor = OpenAIModelPolicy.transcriptionDescriptor(
             diarize: diarize,
             context: diarize ? .meeting : .voice
         )
-        let data = try await perform(request, activity: descriptor)
+        let telemetry = OpenAIRequestTelemetryContext.transcription(
+            task: descriptor.task.rawValue,
+            model: model,
+            body: body,
+            wavData: wavData
+        )
+        let data = try await perform(request, activity: descriptor, telemetry: telemetry)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw OpenAIClientError.invalidResponse
         }
@@ -488,19 +533,26 @@ actor OpenAIClient: AIProviding {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw OpenAIClientError.missingAPIKey }
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        let telemetry = OpenAIRequestTelemetryContext.response(task: activity.task.rawValue, body: body)
         request.httpMethod = "POST"
         request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if telemetry.requestedServiceTier == OpenAIServiceTier.flex.rawValue {
+            request.timeoutInterval = 15 * 60
+        }
         request.httpBody = body
-        return try await perform(request, activity: activity)
+        return try await perform(request, activity: activity, telemetry: telemetry)
     }
 
     private func perform(
         _ request: URLRequest,
-        activity: IndicatorAPIActivityDescriptor
+        activity: IndicatorAPIActivityDescriptor,
+        telemetry: OpenAIRequestTelemetryContext
     ) async throws -> Data {
         let token = await indicatorActivities?.beginAPI(activity)
+        let startedAt = Date()
         var didFinishActivity = false
+        var didRecordUsage = false
         defer {
             if !didFinishActivity, let token, let indicatorActivities {
                 Task { @MainActor in
@@ -512,12 +564,33 @@ actor OpenAIClient: AIProviding {
         do {
             let (data, response) = try await dataLoader(request)
             guard let http = response as? HTTPURLResponse else {
+                await recordUsage(
+                    telemetry,
+                    startedAt: startedAt,
+                    data: data,
+                    response: nil,
+                    outcome: .failure,
+                    errorKind: "invalid_response"
+                )
+                didRecordUsage = true
                 throw OpenAIClientError.invalidResponse
             }
-            guard (200..<300).contains(http.statusCode) else {
-                let message = Self.errorMessage(from: data)
-                    ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
-                throw OpenAIClientError.requestFailed(status: http.statusCode, message: message)
+            let succeeded = (200..<300).contains(http.statusCode)
+            let errorKind = succeeded ? nil : Self.errorKind(from: data, status: http.statusCode)
+            await recordUsage(
+                telemetry,
+                startedAt: startedAt,
+                data: data,
+                response: http,
+                outcome: succeeded ? .success : .failure,
+                errorKind: errorKind
+            )
+            didRecordUsage = true
+            guard succeeded else {
+                throw OpenAIClientError.requestFailed(
+                    status: http.statusCode,
+                    message: Self.safeErrorMessage(status: http.statusCode, errorKind: errorKind)
+                )
             }
             if let token, let indicatorActivities {
                 _ = await indicatorActivities.finishAPI(token, completion: .success)
@@ -525,6 +598,16 @@ actor OpenAIClient: AIProviding {
             didFinishActivity = true
             return data
         } catch {
+            if !didRecordUsage {
+                await recordUsage(
+                    telemetry,
+                    startedAt: startedAt,
+                    data: nil,
+                    response: nil,
+                    outcome: Self.isCancellation(error) ? .cancelled : .failure,
+                    errorKind: Self.transportErrorKind(error)
+                )
+            }
             let completion: IndicatorAPICompletion = Self.isCancellation(error) ? .cancelled : .failure
             if let token, let indicatorActivities {
                 _ = await indicatorActivities.finishAPI(token, completion: completion)
@@ -532,6 +615,43 @@ actor OpenAIClient: AIProviding {
             didFinishActivity = true
             throw error
         }
+    }
+
+    private func recordUsage(
+        _ context: OpenAIRequestTelemetryContext,
+        startedAt: Date,
+        data: Data?,
+        response: HTTPURLResponse?,
+        outcome: OpenAIRequestOutcome,
+        errorKind: String?
+    ) async {
+        let metadata = data.flatMap(OpenAIResponseMetadata.decodeIfPresent(from:))
+        let headers = response.map(OpenAIResponseHeaders.init(response:))
+        let record = OpenAIUsageRecord(
+            attemptID: context.attemptID,
+            startedAt: startedAt,
+            durationSeconds: max(0, Date().timeIntervalSince(startedAt)),
+            task: context.task,
+            requestedModel: context.requestedModel,
+            responseID: metadata?.id,
+            actualModel: metadata?.model,
+            requestedServiceTier: context.requestedServiceTier,
+            actualServiceTier: metadata?.serviceTier,
+            reasoningEffort: context.reasoningEffort,
+            maxOutputTokens: context.maxOutputTokens,
+            outcome: outcome,
+            httpStatus: response?.statusCode,
+            responseStatus: metadata?.status,
+            incompleteReason: metadata?.incompleteDetails?.reason,
+            usage: metadata?.usage,
+            requestBytes: context.requestBytes,
+            responseBytes: data?.count ?? 0,
+            imageCount: context.imageCount,
+            audioDurationSeconds: context.audioDurationSeconds,
+            headers: headers,
+            errorKind: errorKind
+        )
+        await usageRecorder.record(record)
     }
 
     private static func isCancellation(_ error: Error) -> Bool {
@@ -562,10 +682,39 @@ actor OpenAIClient: AIProviding {
         throw OpenAIClientError.invalidResponse
     }
 
-    private static func errorMessage(from data: Data) -> String? {
+    private static func errorKind(from data: Data, status: Int) -> String {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let error = root["error"] as? [String: Any] else { return nil }
-        return error["message"] as? String
+              let error = root["error"] as? [String: Any] else { return "http_\(status)" }
+        let candidate = (error["code"] as? String) ?? (error["type"] as? String)
+        guard let candidate else { return "http_\(status)" }
+        let allowed = candidate.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "-"
+        }
+        let sanitized = String(String.UnicodeScalarView(allowed)).prefix(80)
+        return sanitized.isEmpty ? "http_\(status)" : String(sanitized)
+    }
+
+    private static func safeErrorMessage(status: Int, errorKind: String?) -> String {
+        switch status {
+        case 401, 403:
+            return "Authentication or project access was rejected."
+        case 408:
+            return "The request timed out."
+        case 429 where errorKind == "resource_unavailable":
+            return "Flex processing is temporarily unavailable."
+        case 429:
+            return "The project is temporarily rate limited or has reached a usage limit."
+        case 500..<600:
+            return "The service is temporarily unavailable."
+        default:
+            return HTTPURLResponse.localizedString(forStatusCode: status)
+        }
+    }
+
+    private static func transportErrorKind(_ error: Error) -> String {
+        if isCancellation(error) { return "cancelled" }
+        if let urlError = error as? URLError { return "url_\(urlError.code.rawValue)" }
+        return String(describing: type(of: error))
     }
 
     private static func parseISODate(_ value: String?) -> Date? {
@@ -614,7 +763,10 @@ enum OpenAIRequestFactory {
             "input": "Reply with OK.",
             "max_output_tokens": policy.maxOutputTokens,
             "reasoning": ["effort": policy.reasoningEffort.rawValue],
-            "store": false
+            "service_tier": policy.serviceTier.rawValue,
+            "store": false,
+            "prompt_cache_options": explicitCacheOptions,
+            "text": ["verbosity": policy.textVerbosity.rawValue]
         ])
     }
 
@@ -629,9 +781,15 @@ enum OpenAIRequestFactory {
         imageDetail: String = "low"
     ) throws -> Data {
         let policy = OpenAIModelPolicy.configuration(for: .observationClassification)
-        var content: [[String: Any]] = [[
-            "type": "input_text",
-            "text": interpretationPrompt(
+        var content: [[String: Any]] = [
+            [
+                "type": "input_text",
+                "text": interpretationStablePrompt,
+                "prompt_cache_breakpoint": ["mode": "explicit"]
+            ],
+            [
+                "type": "input_text",
+                "text": interpretationDynamicPrompt(
                 observation: observation,
                 outputLanguage: outputLanguage,
                 followUpDetailLevel: followUpDetailLevel,
@@ -639,7 +797,8 @@ enum OpenAIRequestFactory {
                 followUpCandidates: followUpCandidates,
                 knownFollowUpSubjects: knownFollowUpSubjects
             )
-        ]]
+            ]
+        ]
         if let imageData {
             content.append([
                 "type": "input_image",
@@ -652,8 +811,14 @@ enum OpenAIRequestFactory {
             "input": [["role": "user", "content": content]],
             "reasoning": ["effort": policy.reasoningEffort.rawValue],
             "max_output_tokens": policy.maxOutputTokens,
+            "service_tier": policy.serviceTier.rawValue,
             "store": false,
-            "text": ["format": interpretationFormat]
+            "prompt_cache_key": "iriz:observation:prompt-v2-schema-v2",
+            "prompt_cache_options": explicitCacheOptions,
+            "text": [
+                "verbosity": policy.textVerbosity.rawValue,
+                "format": interpretationFormat
+            ]
         ])
     }
 
@@ -702,13 +867,18 @@ enum OpenAIRequestFactory {
             "input": prompt,
             "reasoning": ["effort": policy.reasoningEffort.rawValue],
             "max_output_tokens": policy.maxOutputTokens,
+            "service_tier": policy.serviceTier.rawValue,
             "store": false,
-            "text": ["format": answerFormat]
+            "prompt_cache_options": explicitCacheOptions,
+            "text": [
+                "verbosity": policy.textVerbosity.rawValue,
+                "format": answerFormat
+            ]
         ])
     }
 
     static func refinementRequest(event: ActivityEvent, outputLanguage: String) throws -> Data {
-        let policy = OpenAIModelPolicy.configuration(for: .eventConsolidation)
+        let policy = OpenAIModelPolicy.refinementConfiguration(for: event)
         let source: [String: Any] = [
             "kind": event.kind.rawValue,
             "status": event.status.rawValue,
@@ -723,7 +893,7 @@ enum OpenAIRequestFactory {
         let prompt = """
         Refine one meaningful iriz event in \(outputLanguage). Make the title short and human, the summary factual, and the details useful for future retrieval.
         Preserve evidence boundaries. Never invent a person, company, URL, date, completion, purchase, submission, or commitment. A completed status requires explicit confirmation already present in the input.
-        Return every URL exactly as provided. Prefer a cautious status when the evidence is ambiguous.
+        Prefer a cautious status when the evidence is ambiguous. Return only the fields in the refinement patch schema.
 
         Event: \(try jsonString(source))
         """
@@ -732,8 +902,13 @@ enum OpenAIRequestFactory {
             "input": prompt,
             "reasoning": ["effort": policy.reasoningEffort.rawValue],
             "max_output_tokens": policy.maxOutputTokens,
+            "service_tier": policy.serviceTier.rawValue,
             "store": false,
-            "text": ["format": refinementFormat]
+            "prompt_cache_options": explicitCacheOptions,
+            "text": [
+                "verbosity": policy.textVerbosity.rawValue,
+                "format": refinementFormat
+            ]
         ])
     }
 
@@ -773,8 +948,13 @@ enum OpenAIRequestFactory {
             "input": prompt,
             "reasoning": ["effort": policy.reasoningEffort.rawValue],
             "max_output_tokens": policy.maxOutputTokens,
+            "service_tier": policy.serviceTier.rawValue,
             "store": false,
-            "text": ["format": followUpMergeFormat]
+            "prompt_cache_options": explicitCacheOptions,
+            "text": [
+                "verbosity": policy.textVerbosity.rawValue,
+                "format": followUpMergeFormat
+            ]
         ])
     }
 
@@ -813,7 +993,24 @@ enum OpenAIRequestFactory {
         return body
     }
 
-    private static func interpretationPrompt(
+    private static let interpretationStablePrompt = """
+    You are iriz, a private activity-memory classifier. Analyze this single observation as evidence, not as certainty.
+    Prefer human actions (application submitted, purchase confirmed, appointment booked, decision made, promise, useful meeting) over technical activity.
+    A page view or form being edited is observed/inProgress, never completed. Use completed only when confirmation evidence is explicit.
+    Create no event for routine navigation or low-value app/window changes. If useful only as secondary context, use kind=context and importance=0.
+    Extract exact companies, roles, products, people and URLs only when present. Do not infer missing URLs.
+    Use a concise title and factual summary.
+    Extract an Action only when confidence is at least 0.60, or when the evidence contains an explicit obligation or deadline. Do not create a "maybe" status.
+    Give every Action an integer priorityScore from 0 to 10 based on consequence, urgency, explicit deadline, and usefulness. Priority is not confidence.
+    A deadline is allowed only when an exact date or time is explicitly present in the observation and directly applies to the action. Put that date in explicitDueAt, set dueSource=explicitEvidence, and cite the evidence in rationale. Otherwise explicitDueAt and dueSource must be null. Never invent a review date or use a date merely visible in the interface.
+    Treat area and contextLabel as different fields: area is only the broad Work, Personal, or Uncategorized type. contextLabel must be a concrete, reusable subject such as Client Acme, Lafayette Website, Kids Activities, or Vacation with Maya. Never use Work, Personal, General, Other, or Uncategorized as contextLabel when the evidence supports anything more precise. Prefer the client, project, website, family activity, person, or durable topic actually named by the evidence, while avoiding a unique subject for every individual action.
+    Compare only against the bounded candidate Actions supplied after these instructions. Use operation=update or operation=complete only with an exact candidate id; otherwise use create and a null id.
+    Whenever commitments is non-empty, set shouldCreateEvent=true and include a compact supporting event for the same observation.
+    Complete only when the observation contains explicit or strong completion proof tied to the same action. Weak evidence must use update with evidenceStrength=weak.
+    Preserve candidate fields unless the new evidence genuinely improves them. Never dismiss or snooze automatically.
+    """
+
+    private static func interpretationDynamicPrompt(
         observation: Observation,
         outputLanguage: String,
         followUpDetailLevel: FollowUpDetailLevel,
@@ -852,21 +1049,9 @@ enum OpenAIRequestFactory {
             ]
         }
         return """
-        You are iriz, a private activity-memory classifier. Analyze this single observation as evidence, not as certainty.
-        Prefer human actions (application submitted, purchase confirmed, appointment booked, decision made, promise, useful meeting) over technical activity.
-        A page view or form being edited is observed/inProgress, never completed. Use completed only when confirmation evidence is explicit.
-        Create no event for routine navigation or low-value app/window changes. If useful only as secondary context, use kind=context and importance=0.
-        Extract exact companies, roles, products, people and URLs only when present. Do not infer missing URLs.
-        Write title, summary and details in \(outputLanguage). Use a concise title and factual summary.
-        Extract an Action only when confidence is at least 0.60, or when the evidence contains an explicit obligation or deadline. Do not create a "maybe" status.
-        Give every Action an integer priorityScore from 0 to 10 based on consequence, urgency, explicit deadline, and usefulness. Priority is not confidence.
-        A deadline is allowed only when an exact date or time is explicitly present in the observation and directly applies to the action. Put that date in explicitDueAt, set dueSource=explicitEvidence, and cite the evidence in rationale. Otherwise both explicitDueAt and suggestedReviewAt must be null. Never invent a review date or use a date merely visible in the interface.
+        Write title, summary and details in \(outputLanguage).
         Detail level for newly created Actions: \(followUpDetailLevel.displayName). \(detailLevelGuidance(followUpDetailLevel)) This setting applies only to operation=create. For update or complete, preserve each candidate's action and summary verbatim, retain its createdDetailLevel, and use details only for additive context. Never split, combine, broaden, narrow, or otherwise reformulate an existing candidate because of the current setting.
-        Treat area and contextLabel as different fields: area is only the broad Work, Personal, or Uncategorized type. contextLabel must be a concrete, reusable subject such as Client Acme, Lafayette Website, Kids Activities, or Vacation with Maya. Never use Work, Personal, General, Other, or Uncategorized as contextLabel when the evidence supports anything more precise. Prefer the client, project, website, family activity, person, or durable topic actually named by the evidence, while avoiding a unique subject for every individual action. \(contextGuidance)
-        Compare only against the bounded candidate Actions below. Use operation=update or operation=complete only with an exact candidate id; otherwise use create and a null id.
-        Whenever commitments is non-empty, set shouldCreateEvent=true and include a compact supporting event for the same observation.
-        Complete only when the observation contains explicit or strong completion proof tied to the same action. Weak evidence must use update with evidenceStrength=weak.
-        Preserve candidate fields unless the new evidence genuinely improves them. Never dismiss or snooze automatically.
+        \(contextGuidance)
 
         Subject catalog: \((try? jsonString(subjectCatalog)) ?? "[]")
         Candidate Actions: \((try? jsonString(candidates)) ?? "[]")
@@ -878,6 +1063,10 @@ enum OpenAIRequestFactory {
         Meeting: \(observation.isMeeting)
         OCR or transcript:\n\(String(observation.text.prefix(12_000)))
         """
+    }
+
+    private static var explicitCacheOptions: [String: Any] {
+        ["mode": "explicit", "ttl": "30m"]
     }
 
     private static func detailLevelGuidance(_ level: FollowUpDetailLevel) -> String {
@@ -906,13 +1095,12 @@ enum OpenAIRequestFactory {
                 "shouldCreateEvent": ["type": "boolean"],
                 "needsOriginalImage": ["type": "boolean"],
                 "languageTag": ["type": "string"],
-                "explanation": ["type": "string"],
                 "event": [
                     "anyOf": [eventSchema, ["type": "null"]]
                 ],
                 "commitments": ["type": "array", "items": commitmentSchema]
             ],
-            "required": ["shouldCreateEvent", "needsOriginalImage", "languageTag", "explanation", "event", "commitments"]
+            "required": ["shouldCreateEvent", "needsOriginalImage", "languageTag", "event", "commitments"]
         ]
     ]}
 
@@ -945,7 +1133,6 @@ enum OpenAIRequestFactory {
             "summary": ["type": "string"],
             "details": ["type": "string"],
             "explicitDueAt": ["type": ["string", "null"]],
-            "suggestedReviewAt": ["type": ["string", "null"]],
             "contextLabel": ["type": "string"],
             "area": ["type": "string", "enum": FollowUpArea.allCases.map(\.rawValue)],
             "priorityScore": ["type": "integer", "minimum": 0, "maximum": 10],
@@ -954,7 +1141,7 @@ enum OpenAIRequestFactory {
             "evidenceStrength": ["type": "string", "enum": ["weak", "strong", "explicit"]],
             "confidence": ["type": "number", "minimum": 0, "maximum": 1],
         ],
-        "required": ["operation", "existingCommitmentID", "owner", "action", "rationale", "summary", "details", "explicitDueAt", "suggestedReviewAt", "contextLabel", "area", "priorityScore", "priorityReason", "dueSource", "evidenceStrength", "confidence"]
+        "required": ["operation", "existingCommitmentID", "owner", "action", "rationale", "summary", "details", "explicitDueAt", "contextLabel", "area", "priorityScore", "priorityReason", "dueSource", "evidenceStrength", "confidence"]
     ]}
 
     private static var answerFormat: [String: Any] {[
@@ -976,7 +1163,20 @@ enum OpenAIRequestFactory {
         "type": "json_schema",
         "name": "iriz_event_refinement",
         "strict": true,
-        "schema": eventSchema
+        "schema": [
+            "type": "object",
+            "additionalProperties": false,
+            "properties": [
+                "status": ["type": "string", "enum": EventStatus.allCases.map(\.rawValue)],
+                "importance": ["type": "integer", "minimum": 0, "maximum": 3],
+                "title": ["type": "string"],
+                "summary": ["type": "string"],
+                "details": ["type": "string"],
+                "entities": ["type": "array", "items": ["type": "string"]],
+                "confidence": ["type": "number", "minimum": 0, "maximum": 1]
+            ],
+            "required": ["status", "importance", "title", "summary", "details", "entities", "confidence"]
+        ]
     ]}
 
     private static var followUpMergeFormat: [String: Any] {[
@@ -1017,7 +1217,6 @@ private struct InterpretationPayload: Codable {
     var shouldCreateEvent: Bool
     var needsOriginalImage: Bool
     var languageTag: String
-    var explanation: String
     var event: EventPayload?
     var commitments: [CommitmentPayload]
 }
@@ -1034,6 +1233,16 @@ private struct EventPayload: Codable {
     var confidence: Double
 }
 
+private struct EventRefinementPayload: Codable {
+    var status: String
+    var importance: Int
+    var title: String
+    var summary: String
+    var details: String
+    var entities: [String]
+    var confidence: Double
+}
+
 private struct CommitmentPayload: Codable {
     var operation: String
     var existingCommitmentID: String?
@@ -1043,7 +1252,6 @@ private struct CommitmentPayload: Codable {
     var summary: String
     var details: String
     var explicitDueAt: String?
-    var suggestedReviewAt: String?
     var contextLabel: String
     var area: String
     var priorityScore: Int

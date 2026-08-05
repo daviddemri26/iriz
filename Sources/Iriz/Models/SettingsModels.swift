@@ -402,15 +402,61 @@ enum MainSection: String, CaseIterable, Identifiable, Sendable {
 }
 
 enum SettingsCategory: String, CaseIterable, Identifiable, Sendable {
+    case general = "General"
     case capture = "Capture"
     case intelligence = "AI & Language"
-    case memory = "Memory"
+    case actions = "Actions"
+    case memory = "Memory & Data"
     case privacy = "Privacy"
 
     var id: String { rawValue }
+
+    var symbolName: String {
+        switch self {
+        case .general: "slider.horizontal.3"
+        case .capture: "dot.radiowaves.left.and.right"
+        case .intelligence: "sparkles"
+        case .actions: "checklist"
+        case .memory: "externaldrive"
+        case .privacy: "lock.shield"
+        }
+    }
+
+    var navigationDescription: String {
+        switch self {
+        case .general: "Access, startup and summaries"
+        case .capture: "Screen, microphone and schedule"
+        case .intelligence: "OpenAI connection and language"
+        case .actions: "Action detail and workspace"
+        case .memory: "Retention, cleanup and export"
+        case .privacy: "Permissions and exclusions"
+        }
+    }
+
+    var pageDescription: String {
+        switch self {
+        case .general:
+            "Choose how iriz fits into your Mac and when it quietly brings useful information back to you."
+        case .capture:
+            "Control exactly when iriz can observe your screen or listen through the microphone."
+        case .intelligence:
+            "Connect your personal OpenAI key and guide the language used for memories and speech."
+        case .actions:
+            "Decide how selective iriz should be when turning meaningful context into Actions."
+        case .memory:
+            "Manage how long useful memories remain, remove expired media and export your data."
+        case .privacy:
+            "Review macOS permissions and define places iriz must never observe."
+        }
+    }
 }
 
 struct LanguageOption: Identifiable, Hashable, Sendable {
+    static let commonOutputIdentifiers = [
+        "en-US", "fr-FR", "es-ES", "de-DE", "it-IT", "pt-BR", "he-IL", "pl-PL",
+        "tr-TR", "ru-RU", "ar-SA", "hi-IN", "ja-JP", "ko-KR", "zh-CN"
+    ]
+
     var id: String { identifier }
     var identifier: String
     var displayName: String

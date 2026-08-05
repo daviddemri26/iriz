@@ -87,33 +87,46 @@ actor EncryptedSQLiteStore: LogRepository {
 
     func saveObservation(_ observation: Observation) async throws {
         let payload = try encoder.encode(observation)
-        try execute(
-            """
-            INSERT INTO observations (id, captured_at, expires_at, source, processed_at, payload)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                captured_at = excluded.captured_at,
-                expires_at = excluded.expires_at,
-                source = excluded.source,
-                processed_at = excluded.processed_at,
-                payload = excluded.payload
-            """,
-            [
-                .text(observation.id.uuidString),
-                .double(observation.capturedAt.timeIntervalSince1970),
-                .double(observation.expiresAt.timeIntervalSince1970),
-                .text(observation.source.rawValue),
-                observation.processedAt.map { .double($0.timeIntervalSince1970) } ?? .null,
-                .blob(payload)
-            ]
-        )
+        try transaction {
+            try execute(
+                """
+                INSERT INTO observations (id, captured_at, expires_at, source, processed_at, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    captured_at = excluded.captured_at,
+                    expires_at = excluded.expires_at,
+                    source = excluded.source,
+                    processed_at = excluded.processed_at,
+                    payload = excluded.payload
+                """,
+                [
+                    .text(observation.id.uuidString),
+                    .double(observation.capturedAt.timeIntervalSince1970),
+                    .double(observation.expiresAt.timeIntervalSince1970),
+                    .text(observation.source.rawValue),
+                    observation.processedAt.map { .double($0.timeIntervalSince1970) } ?? .null,
+                    .blob(payload)
+                ]
+            )
+            if observation.processedAt == nil {
+                try insertAnalysisJobIfNeeded(observationID: observation.id, at: observation.capturedAt)
+            }
+        }
         try persist()
     }
 
     func markObservationProcessed(id: UUID, at date: Date) async throws {
         guard var value = try fetchObservation(id: id) else { return }
         value.processedAt = date
-        try await saveObservation(value)
+        let payload = try encoder.encode(value)
+        try transaction {
+            try execute(
+                "UPDATE observations SET processed_at = ?, payload = ? WHERE id = ?",
+                [.double(date.timeIntervalSince1970), .blob(payload), .text(id.uuidString)]
+            )
+            try execute("DELETE FROM analysis_jobs WHERE observation_id = ?", [.text(id.uuidString)])
+        }
+        try persist()
     }
 
     func observation(id: UUID) async throws -> Observation? {
@@ -134,6 +147,247 @@ actor EncryptedSQLiteStore: LogRepository {
             }
         }
         return values
+    }
+
+    func enqueueAnalysis(observationID: UUID, at date: Date = Date()) async throws {
+        try insertAnalysisJobIfNeeded(observationID: observationID, at: date)
+        try persist()
+    }
+
+    func claimAnalysisJobs(
+        limit: Int,
+        now: Date = Date(),
+        leaseDuration: TimeInterval = 10 * 60
+    ) async throws -> [AnalysisJob] {
+        let boundedLimit = max(0, limit)
+        guard boundedLimit > 0 else { return [] }
+        let nowValue = now.timeIntervalSince1970
+        let leaseValue = now.addingTimeInterval(leaseDuration).timeIntervalSince1970
+        var jobs: [AnalysisJob] = []
+        try transaction {
+            try execute(
+                """
+                UPDATE analysis_jobs
+                SET state = 'retryable', lease_expires_at = NULL, updated_at = ?
+                WHERE state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+                """,
+                [.double(nowValue), .double(nowValue)]
+            )
+            let statement = try prepare(
+                """
+                SELECT id, observation_id, state, attempts, next_attempt_at, lease_expires_at,
+                       last_error_kind, last_error_message, created_at, updated_at
+                FROM analysis_jobs
+                WHERE state IN ('queued', 'retryable') AND next_attempt_at <= ?
+                ORDER BY next_attempt_at ASC, created_at ASC
+                LIMIT ?
+                """
+            )
+            defer { sqlite3_finalize(statement) }
+            try bind([.double(nowValue), .int(Int64(boundedLimit))], to: statement)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let job = analysisJob(from: statement) else { continue }
+                jobs.append(job)
+            }
+            for job in jobs {
+                try execute(
+                    """
+                    UPDATE analysis_jobs
+                    SET state = 'running', attempts = attempts + 1, lease_expires_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    [.double(leaseValue), .double(nowValue), .text(job.id.uuidString)]
+                )
+            }
+        }
+        if !jobs.isEmpty { try persist() }
+        return jobs.map { job in
+            var claimed = job
+            claimed.state = .running
+            claimed.attempts += 1
+            claimed.leaseExpiresAt = Date(timeIntervalSince1970: leaseValue)
+            claimed.updatedAt = now
+            return claimed
+        }
+    }
+
+    func completeAnalysisJob(id: UUID) async throws {
+        try execute("DELETE FROM analysis_jobs WHERE id = ?", [.text(id.uuidString)])
+        try persist()
+    }
+
+    func rescheduleAnalysisJob(
+        id: UUID,
+        state: AnalysisJobState,
+        nextAttemptAt: Date,
+        errorKind: AnalysisErrorKind?,
+        errorMessage: String?
+    ) async throws {
+        try execute(
+            """
+            UPDATE analysis_jobs
+            SET state = ?, next_attempt_at = ?, lease_expires_at = NULL,
+                last_error_kind = ?, last_error_message = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            [
+                .text(state.rawValue),
+                .double(nextAttemptAt.timeIntervalSince1970),
+                errorKind.map { .text($0.rawValue) } ?? .null,
+                errorMessage.map(SQLiteBoundValue.text) ?? .null,
+                .double(Date().timeIntervalSince1970),
+                .text(id.uuidString)
+            ]
+        )
+        try persist()
+    }
+
+    func unblockCredentialAnalysisJobs(at date: Date = Date()) async throws {
+        try execute(
+            """
+            UPDATE analysis_jobs
+            SET state = 'retryable', next_attempt_at = ?, lease_expires_at = NULL, updated_at = ?
+            WHERE state = 'blockedCredentials'
+            """,
+            [.double(date.timeIntervalSince1970), .double(date.timeIntervalSince1970)]
+        )
+        try persist()
+    }
+
+    func pendingAnalysisJobCount() async throws -> Int {
+        let statement = try prepare(
+            "SELECT COUNT(*) FROM analysis_jobs WHERE state NOT IN ('terminal')"
+        )
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    func enqueueRefinement(
+        eventID: UUID,
+        eventRevision: Date,
+        isCritical: Bool,
+        notBefore: Date
+    ) async throws {
+        let now = Date()
+        try execute(
+            """
+            INSERT INTO refinement_jobs (
+                id, event_id, event_revision, is_critical, state, attempts,
+                next_attempt_at, lease_expires_at, last_error_kind, last_error_message,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'queued', 0, ?, NULL, NULL, NULL, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+                event_revision = excluded.event_revision,
+                is_critical = MAX(refinement_jobs.is_critical, excluded.is_critical),
+                state = 'queued',
+                attempts = 0,
+                next_attempt_at = excluded.next_attempt_at,
+                lease_expires_at = NULL,
+                last_error_kind = NULL,
+                last_error_message = NULL,
+                updated_at = excluded.updated_at
+            """,
+            [
+                .text(UUID().uuidString),
+                .text(eventID.uuidString),
+                .double(eventRevision.timeIntervalSince1970),
+                .int(isCritical ? 1 : 0),
+                .double(notBefore.timeIntervalSince1970),
+                .double(now.timeIntervalSince1970),
+                .double(now.timeIntervalSince1970)
+            ]
+        )
+        try persist()
+    }
+
+    func claimRefinementJobs(
+        limit: Int,
+        now: Date = Date(),
+        leaseDuration: TimeInterval = 20 * 60
+    ) async throws -> [RefinementJob] {
+        let boundedLimit = max(0, limit)
+        guard boundedLimit > 0 else { return [] }
+        let nowValue = now.timeIntervalSince1970
+        let leaseValue = now.addingTimeInterval(leaseDuration).timeIntervalSince1970
+        var jobs: [RefinementJob] = []
+        try transaction {
+            try execute(
+                """
+                UPDATE refinement_jobs
+                SET state = 'retryable', lease_expires_at = NULL, updated_at = ?
+                WHERE state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+                """,
+                [.double(nowValue), .double(nowValue)]
+            )
+            let statement = try prepare(
+                """
+                SELECT id, event_id, event_revision, is_critical, state, attempts,
+                       next_attempt_at, lease_expires_at, last_error_kind, last_error_message,
+                       created_at, updated_at
+                FROM refinement_jobs
+                WHERE state IN ('queued', 'retryable') AND next_attempt_at <= ?
+                ORDER BY is_critical DESC, next_attempt_at ASC, created_at ASC
+                LIMIT ?
+                """
+            )
+            defer { sqlite3_finalize(statement) }
+            try bind([.double(nowValue), .int(Int64(boundedLimit))], to: statement)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let job = refinementJob(from: statement) else { continue }
+                jobs.append(job)
+            }
+            for job in jobs {
+                try execute(
+                    """
+                    UPDATE refinement_jobs
+                    SET state = 'running', attempts = attempts + 1, lease_expires_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    [.double(leaseValue), .double(nowValue), .text(job.id.uuidString)]
+                )
+            }
+        }
+        if !jobs.isEmpty { try persist() }
+        return jobs.map { job in
+            var claimed = job
+            claimed.state = .running
+            claimed.attempts += 1
+            claimed.leaseExpiresAt = Date(timeIntervalSince1970: leaseValue)
+            claimed.updatedAt = now
+            return claimed
+        }
+    }
+
+    func completeRefinementJob(id: UUID) async throws {
+        try execute("DELETE FROM refinement_jobs WHERE id = ?", [.text(id.uuidString)])
+        try persist()
+    }
+
+    func rescheduleRefinementJob(
+        id: UUID,
+        state: AnalysisJobState,
+        nextAttemptAt: Date,
+        errorKind: AnalysisErrorKind?,
+        errorMessage: String?
+    ) async throws {
+        try execute(
+            """
+            UPDATE refinement_jobs
+            SET state = ?, next_attempt_at = ?, lease_expires_at = NULL,
+                last_error_kind = ?, last_error_message = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            [
+                .text(state.rawValue),
+                .double(nextAttemptAt.timeIntervalSince1970),
+                errorKind.map { .text($0.rawValue) } ?? .null,
+                errorMessage.map(SQLiteBoundValue.text) ?? .null,
+                .double(Date().timeIntervalSince1970),
+                .text(id.uuidString)
+            ]
+        )
+        try persist()
     }
 
     func saveEvent(_ event: ActivityEvent) async throws {
@@ -454,6 +708,74 @@ actor EncryptedSQLiteStore: LogRepository {
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
         return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    private func insertAnalysisJobIfNeeded(observationID: UUID, at date: Date) throws {
+        let value = date.timeIntervalSince1970
+        try execute(
+            """
+            INSERT OR IGNORE INTO analysis_jobs (
+                id, observation_id, state, attempts, next_attempt_at, lease_expires_at,
+                last_error_kind, last_error_message, created_at, updated_at
+            ) VALUES (?, ?, 'queued', 0, ?, NULL, NULL, NULL, ?, ?)
+            """,
+            [
+                .text(UUID().uuidString),
+                .text(observationID.uuidString),
+                .double(value),
+                .double(value),
+                .double(value)
+            ]
+        )
+    }
+
+    private func analysisJob(from statement: OpaquePointer) -> AnalysisJob? {
+        guard let idText = string(at: 0, statement: statement),
+              let id = UUID(uuidString: idText),
+              let observationText = string(at: 1, statement: statement),
+              let observationID = UUID(uuidString: observationText),
+              let stateText = string(at: 2, statement: statement),
+              let state = AnalysisJobState(rawValue: stateText) else { return nil }
+        return AnalysisJob(
+            id: id,
+            observationID: observationID,
+            state: state,
+            attempts: Int(sqlite3_column_int64(statement, 3)),
+            nextAttemptAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 4)),
+            leaseExpiresAt: optionalDate(at: 5, statement: statement),
+            lastErrorKind: string(at: 6, statement: statement).flatMap(AnalysisErrorKind.init(rawValue:)),
+            lastErrorMessage: string(at: 7, statement: statement),
+            createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 8)),
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
+        )
+    }
+
+    private func refinementJob(from statement: OpaquePointer) -> RefinementJob? {
+        guard let idText = string(at: 0, statement: statement),
+              let id = UUID(uuidString: idText),
+              let eventText = string(at: 1, statement: statement),
+              let eventID = UUID(uuidString: eventText),
+              let stateText = string(at: 4, statement: statement),
+              let state = AnalysisJobState(rawValue: stateText) else { return nil }
+        return RefinementJob(
+            id: id,
+            eventID: eventID,
+            eventRevision: Date(timeIntervalSince1970: sqlite3_column_double(statement, 2)),
+            isCritical: sqlite3_column_int(statement, 3) != 0,
+            state: state,
+            attempts: Int(sqlite3_column_int64(statement, 5)),
+            nextAttemptAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 6)),
+            leaseExpiresAt: optionalDate(at: 7, statement: statement),
+            lastErrorKind: string(at: 8, statement: statement).flatMap(AnalysisErrorKind.init(rawValue:)),
+            lastErrorMessage: string(at: 9, statement: statement),
+            createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 10)),
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 11))
+        )
+    }
+
+    private func optionalDate(at index: Int32, statement: OpaquePointer) -> Date? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else { return nil }
+        return Date(timeIntervalSince1970: sqlite3_column_double(statement, index))
     }
 
     private func fetchObservation(id: UUID) throws -> Observation? {
@@ -815,6 +1137,47 @@ actor EncryptedSQLiteStore: LogRepository {
             payload BLOB NOT NULL
         );
         CREATE INDEX IF NOT EXISTS observations_pending ON observations(processed_at, expires_at);
+        CREATE TABLE IF NOT EXISTS analysis_jobs (
+            id TEXT PRIMARY KEY NOT NULL,
+            observation_id TEXT UNIQUE NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+            state TEXT NOT NULL,
+            attempts INTEGER NOT NULL,
+            next_attempt_at REAL NOT NULL,
+            lease_expires_at REAL,
+            last_error_kind TEXT,
+            last_error_message TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS analysis_jobs_ready
+            ON analysis_jobs(state, next_attempt_at, created_at);
+        INSERT OR IGNORE INTO analysis_jobs (
+            id, observation_id, state, attempts, next_attempt_at, lease_expires_at,
+            last_error_kind, last_error_message, created_at, updated_at
+        )
+        SELECT
+            lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-' ||
+            lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' ||
+            lower(hex(randomblob(6))),
+            id, 'queued', 0, captured_at, NULL, NULL, NULL, captured_at, captured_at
+        FROM observations
+        WHERE processed_at IS NULL AND expires_at > unixepoch();
+        CREATE TABLE IF NOT EXISTS refinement_jobs (
+            id TEXT PRIMARY KEY NOT NULL,
+            event_id TEXT UNIQUE NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+            event_revision REAL NOT NULL,
+            is_critical INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            attempts INTEGER NOT NULL,
+            next_attempt_at REAL NOT NULL,
+            lease_expires_at REAL,
+            last_error_kind TEXT,
+            last_error_message TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS refinement_jobs_ready
+            ON refinement_jobs(state, is_critical DESC, next_attempt_at, created_at);
         CREATE TABLE IF NOT EXISTS commitments (
             id TEXT PRIMARY KEY NOT NULL,
             event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,

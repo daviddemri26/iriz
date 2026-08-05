@@ -184,8 +184,18 @@ struct IndicatorPresentationTests {
         #expect(IndicatorSettingsDestination.category(for: .observing) == nil)
         #expect(IndicatorSettingsDestination.category(for: .error("Network")) == nil)
         #expect(SettingsCategory.allCases.map(\.rawValue) == [
-            "Capture", "AI & Language", "Memory", "Privacy"
+            "General", "Capture", "AI & Language", "Actions", "Memory & Data", "Privacy"
         ])
+        #expect(SettingsCategory.allCases.allSatisfy { !$0.symbolName.isEmpty })
+        #expect(SettingsCategory.allCases.allSatisfy { !$0.navigationDescription.isEmpty })
+        #expect(SettingsCategory.allCases.allSatisfy { !$0.pageDescription.isEmpty })
+    }
+
+    @Test("The focused language catalog stays concise and includes Hebrew")
+    func settingsLanguageCatalog() {
+        #expect(LanguageOption.commonOutputIdentifiers.count == 15)
+        #expect(Set(LanguageOption.commonOutputIdentifiers).count == 15)
+        #expect(LanguageOption.commonOutputIdentifiers.contains("he-IL"))
     }
 
     @Test("The floating bubble and main window are mutually exclusive")
