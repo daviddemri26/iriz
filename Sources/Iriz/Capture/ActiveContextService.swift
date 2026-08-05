@@ -10,6 +10,28 @@ struct ActiveContext: Equatable, Sendable {
     var isMeeting: Bool
 }
 
+enum ActiveContextOutcome: Equatable, Sendable {
+    case available(ActiveContext)
+    case `private`
+    case unavailable
+
+    var visibility: ScreenContextVisibility {
+        switch self {
+        case .available: .available
+        case .private: .private
+        case .unavailable: .unavailable
+        }
+    }
+
+    /// Only an available outcome can ever cross the capture boundary. Private
+    /// and unavailable outcomes deliberately carry no application, title, URL,
+    /// or accessibility element.
+    var capturableContext: ActiveContext? {
+        guard case .available(let context) = self else { return nil }
+        return context
+    }
+}
+
 private struct ActiveApplicationSnapshot: Sendable {
     let processIdentifier: pid_t
     let bundleIdentifier: String?
@@ -17,7 +39,8 @@ private struct ActiveApplicationSnapshot: Sendable {
 }
 
 actor ActiveContextService {
-    func current(settings: IrizSettings) async -> ActiveContext? {
+    func current(settings: IrizSettings) async -> ActiveContextOutcome {
+        guard PermissionService.accessibilityState() == .granted else { return .unavailable }
         let application: ActiveApplicationSnapshot? = await MainActor.run {
             guard let running = NSWorkspace.shared.frontmostApplication else { return nil }
             return ActiveApplicationSnapshot(
@@ -26,18 +49,18 @@ actor ActiveContextService {
                 localizedName: running.localizedName
             )
         }
-        guard let application else { return nil }
+        guard let application else { return .unavailable }
         let bundleIdentifier = application.bundleIdentifier
         let applicationName = application.localizedName
         guard Self.shouldInspect(
             bundleIdentifier: bundleIdentifier,
             ownBundleIdentifier: Bundle.main.bundleIdentifier,
             excludedBundleIdentifiers: settings.excludedBundleIdentifiers
-        ) else { return nil }
+        ) else { return .private }
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         if let focused = copyElementAttribute(kAXFocusedUIElementAttribute as CFString, from: appElement),
            copyStringAttribute(kAXSubroleAttribute as CFString, from: focused) == (kAXSecureTextFieldSubrole as String) {
-            return nil
+            return .private
         }
         let window = copyElementAttribute(kAXFocusedWindowAttribute as CFString, from: appElement)
         let title = window.flatMap { copyStringAttribute(kAXTitleAttribute as CFString, from: $0) }
@@ -54,8 +77,8 @@ actor ActiveContextService {
             windowTitle: context.windowTitle,
             url: context.url,
             settings: settings
-        ) else { return nil }
-        return context
+        ) else { return .private }
+        return .available(context)
     }
 
     nonisolated static func shouldInspect(

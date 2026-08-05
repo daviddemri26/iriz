@@ -71,7 +71,10 @@ struct MainWindowView: View {
 
             Spacer(minLength: 8)
 
-            sidebarButton(for: .settings)
+            VStack(spacing: 5) {
+                sidebarButton(for: .howIrizWorks)
+                sidebarButton(for: .settings)
+            }
                 .padding(.horizontal, 10)
 
             ObservationControlCard(placement: .sidebar)
@@ -105,6 +108,7 @@ struct MainWindowView: View {
         switch app.selectedSection {
         case .followUp: FollowUpView()
         case .assistant: AssistantView()
+        case .howIrizWorks: HowIrizWorksView()
         case .settings: SettingsView()
         }
     }

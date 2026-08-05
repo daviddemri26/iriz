@@ -97,7 +97,6 @@ struct SettingsView: View {
         case .capture:
             captureSection
             quickAccessSection
-            statusLegendSection
         case .intelligence:
             apiSection
             followUpDetailLevelSection
@@ -180,16 +179,14 @@ struct SettingsView: View {
 
     private var captureSection: some View {
         SettingsGroup(
-            title: "How Iriz works",
+            title: "Observation Controls",
             subtitle: "These are the same controls shown in the floating panel. Pause is the master switch and overrides both channels."
         ) {
             ObservationChannelsControl(presentation: .settings)
             HStack(spacing: 8) {
-                Image(systemName: app.captureHealth.irizAppearance.symbol)
-                    .foregroundStyle(app.captureHealth.irizAppearance.tint)
-                Text(settings.settings.isPaused
-                     ? "Paused — your Observe and Listen choices are preserved for Resume."
-                     : "Current activity — \(app.observationStatusText).")
+                Image(systemName: app.indicatorPresentation.symbol)
+                    .foregroundStyle(app.indicatorPresentation.tint)
+                Text("Current activity — \(app.indicatorPresentation.title).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -232,46 +229,6 @@ struct SettingsView: View {
         }
     }
 
-    private var statusLegendSection: some View {
-        SettingsGroup(
-            title: "Live Status Legend",
-            subtitle: "Every visible Iriz control shows what the app is doing right now, not whether Always On or Schedule is selected."
-        ) {
-            VStack(alignment: .leading, spacing: 13) {
-                ForEach(IrizStatusLegend.items) { item in
-                    HStack(alignment: .top, spacing: 11) {
-                        ZStack {
-                            Circle().fill(item.tint.opacity(0.14))
-                            Circle().stroke(item.tint.opacity(item.breathes ? 0.5 : 0.25), lineWidth: 1.2)
-                        }
-                        .frame(width: 20, height: 20)
-                        .padding(.top, 1)
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 7) {
-                                Text(item.title).font(.callout.weight(.semibold))
-                                if item.breathes {
-                                    Text("GENTLE PULSE")
-                                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                                        .tracking(0.5)
-                                        .foregroundStyle(item.tint)
-                                }
-                            }
-                            Text(item.detail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            Text("Always On and Schedule decide when the selected channels may run. The live status changes only when the activity happening now changes.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("Navigation and action buttons stay neutral. Green is reserved for successful or completed actions, so it never means that capture is active.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private var quickAccessSection: some View {
         SettingsGroup(
             title: "Quick Access",
@@ -293,7 +250,7 @@ struct SettingsView: View {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Floating Bubble")
-                        Text("Shows the breathing logo and expands to the full shared control card on hover.")
+                        Text("Shows the live Iriz indicator and expands to the full shared control card on hover.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

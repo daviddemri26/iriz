@@ -13,15 +13,31 @@ struct FloatingCapsuleView: View {
     }
 
     private var collapsedView: some View {
-        IrizBreathingLogo(size: 46)
-        .frame(width: 52, height: 52)
-        .contentShape(Circle())
-        .help("Iriz · \(app.captureHealth.irizAppearance.title)")
+        IrizIndicatorView(
+            presentation: app.indicatorPresentation,
+            logoSize: IrizIndicatorMetrics.logoSize
+        )
+        .frame(
+            width: IrizIndicatorMetrics.collapsedPanelSize,
+            height: IrizIndicatorMetrics.collapsedPanelSize
+        )
+        .contentShape(
+            RoundedRectangle(
+                cornerRadius: IrizIndicatorMetrics.logoSize * IrizIndicatorMetrics.logoCornerRadiusRatio
+                    + IrizIndicatorMetrics.ringOutset,
+                style: .continuous
+            )
+        )
+        .help("Iriz · \(app.indicatorPresentation.title)")
+        .onTapGesture(perform: model.expand)
         .simultaneousGesture(
             DragGesture(minimumDistance: 4)
                 .onChanged { _ in model.dragChanged() }
                 .onEnded { _ in model.dragEnded() }
         )
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Opens Iriz controls")
+        .accessibilityAction(.default) { model.expand() }
     }
 
     private var expandedView: some View {

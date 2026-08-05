@@ -196,11 +196,9 @@ struct FollowUpView: View {
         HStack(spacing: 0) {
             filterBar
                 .frame(maxWidth: .infinity)
-            if shouldShowCompletedRail {
-                Divider()
-                completedRailHeader
-                    .frame(width: 232)
-            }
+            Divider()
+            completedRailHeader
+                .frame(width: 232)
         }
         .frame(height: 80)
     }
@@ -214,9 +212,6 @@ struct FollowUpView: View {
                     subjectMenu
                     Spacer(minLength: 8)
                     searchField
-                    if !shouldShowCompletedRail {
-                        completedRailToggleButton
-                    }
                 }
 
                 VStack(alignment: .leading, spacing: 9) {
@@ -228,9 +223,6 @@ struct FollowUpView: View {
                     }
                     searchField
                         .frame(maxWidth: .infinity)
-                    if !shouldShowCompletedRail {
-                        completedRailToggleButton
-                    }
                 }
             }
 
@@ -248,7 +240,7 @@ struct FollowUpView: View {
             }
         }
         .padding(.leading, 22)
-        .padding(.trailing, shouldShowCompletedRail ? 14 : 22)
+        .padding(.trailing, 14)
         .padding(.vertical, 12)
     }
 
@@ -773,6 +765,25 @@ enum FollowUpTilePresentation {
     }
 }
 
+private struct FollowUpTileBackground: View {
+    let subjectColor: Color
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .fill(Color(red: 0.10, green: 0.10, blue: 0.12))
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [subjectColor.opacity(0.34), subjectColor.opacity(0.18)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        }
+    }
+}
+
 private struct FollowUpTile: View {
     @EnvironmentObject private var app: AppState
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -827,21 +838,7 @@ private struct FollowUpTile: View {
         .padding(13)
         .frame(height: FollowUpTilePresentation.tileHeight, alignment: .top)
         .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .fill(Color(red: 0.10, green: 0.10, blue: 0.12))
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                subject.color.color.opacity(0.34),
-                                subject.color.color.opacity(0.18)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-            }
+            FollowUpTileBackground(subjectColor: subject.color.color)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 15, style: .continuous)
@@ -1152,10 +1149,6 @@ private struct CompletedFollowUpCard: View {
                     )
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(IrizTheme.mint)
-                    Text(completionProof)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(compact ? 2 : 3)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -1166,25 +1159,13 @@ private struct CompletedFollowUpCard: View {
         }
         .padding(12)
         .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(IrizTheme.card.opacity(0.92))
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(subject.color.color.opacity(0.09))
-            }
+            FollowUpTileBackground(subjectColor: subject.color.color)
         }
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(IrizTheme.mint.opacity(0.18)))
-    }
-
-    private var completionProof: String {
-        if let evidence = commitment.completionEvidence,
-           !evidence.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Proof: \(evidence.summary)"
+        .overlay {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(subject.color.color.opacity(0.30), lineWidth: 1)
         }
-        if commitment.completionActor == .user {
-            return "Proof: marked complete by you."
-        }
-        return "Proof from this legacy completion is no longer available."
+        .shadow(color: .black.opacity(0.10), radius: 8, y: 3)
     }
 }
 

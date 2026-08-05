@@ -10,6 +10,10 @@ enum IrizTheme {
     static let observing = Color(red: 0.16, green: 0.52, blue: 0.96)
     static let listening = Color(red: 0.92, green: 0.30, blue: 0.64)
     static let observingAndListening = Color(red: 0.30, green: 0.36, blue: 0.86)
+    static let privateContext = Color(red: 0.12, green: 0.68, blue: 0.66)
+    static let apiHighlight = Color(red: 0.30, green: 0.82, blue: 1.00)
+    static let apiWarmHighlight = Color(red: 1.00, green: 0.65, blue: 0.28)
+    static let voiceSignalHighlight = Color(red: 1.00, green: 0.56, blue: 0.82)
     static let processing = Color(red: 0.94, green: 0.60, blue: 0.16)
     static let attention = Color.orange
     static let canvas = Color(nsColor: .windowBackgroundColor)
@@ -45,12 +49,15 @@ struct IrizLogo: View {
     var size: CGFloat = 34
     var shape: Shape = .appIcon
     var castsShadow = true
+    var contentScale: CGFloat = 1
 
     var body: some View {
         Image(nsImage: NSApplication.shared.applicationIconImage)
             .resizable()
             .interpolation(.high)
             .scaledToFill()
+        .frame(width: size, height: size)
+        .scaleEffect(contentScale)
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: shape == .circle ? size / 2 : size * 0.24, style: .continuous))
         .shadow(

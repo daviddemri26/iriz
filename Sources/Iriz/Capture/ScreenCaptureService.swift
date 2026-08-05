@@ -16,6 +16,8 @@ struct CapturedScreenFrame: @unchecked Sendable {
 
 actor ScreenCaptureService {
     typealias Handler = @Sendable (CapturedScreenFrame) async -> Void
+    typealias VisibilityHandler = @Sendable (ScreenContextVisibility) async -> Void
+    typealias FailureHandler = @Sendable (String?) async -> Void
 
     private let contextService: ActiveContextService
     private var captureTask: Task<Void, Never>?
@@ -27,7 +29,12 @@ actor ScreenCaptureService {
         self.contextService = contextService
     }
 
-    func start(settingsProvider: @escaping @Sendable () async -> IrizSettings, handler: @escaping Handler) {
+    func start(
+        settingsProvider: @escaping @Sendable () async -> IrizSettings,
+        visibilityHandler: @escaping VisibilityHandler = { _ in },
+        failureHandler: @escaping FailureHandler = { _ in },
+        handler: @escaping Handler
+    ) {
         guard captureTask == nil else { return }
         captureTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -35,13 +42,24 @@ actor ScreenCaptureService {
                 let settings = await settingsProvider()
                 if Self.shouldAttemptCapture(
                     settings: settings,
-                    permission: PermissionService.screenCaptureState()
+                    permission: PermissionService.screenCaptureState(),
+                    accessibilityPermission: PermissionService.accessibilityState()
                 ) {
                     do {
-                        try await self.captureOne(settings: settings, handler: handler)
+                        try await self.captureOne(
+                            settings: settings,
+                            visibilityHandler: visibilityHandler,
+                            handler: handler
+                        )
+                        await failureHandler(nil)
                     } catch {
+                        await failureHandler("Screen observation is unavailable.")
+                        await visibilityHandler(.unavailable)
                         // Retry quietly. Only the explicit Allow button may open a system prompt.
                     }
+                } else {
+                    await failureHandler(nil)
+                    await visibilityHandler(.unavailable)
                 }
                 try? await Task.sleep(for: .seconds(2))
             }
@@ -55,12 +73,24 @@ actor ScreenCaptureService {
         previousContext = nil
     }
 
-    nonisolated static func shouldAttemptCapture(settings: IrizSettings, permission: PermissionState) -> Bool {
-        settings.isScreenCaptureActiveNow && permission == .granted
+    nonisolated static func shouldAttemptCapture(
+        settings: IrizSettings,
+        permission: PermissionState,
+        accessibilityPermission: PermissionState = .granted
+    ) -> Bool {
+        settings.isScreenCaptureActiveNow
+            && permission == .granted
+            && accessibilityPermission == .granted
     }
 
-    private func captureOne(settings: IrizSettings, handler: @escaping Handler) async throws {
-        guard let context = await contextService.current(settings: settings) else { return }
+    private func captureOne(
+        settings: IrizSettings,
+        visibilityHandler: @escaping VisibilityHandler,
+        handler: @escaping Handler
+    ) async throws {
+        let outcome = await contextService.current(settings: settings)
+        await visibilityHandler(outcome.visibility)
+        guard let context = outcome.capturableContext else { return }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = activeDisplay(in: content.displays) else { return }
         let excludedApplications = content.applications.filter { application in

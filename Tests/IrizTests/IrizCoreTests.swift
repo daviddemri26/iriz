@@ -153,12 +153,12 @@ struct IrizCoreTests {
         let waiting = CaptureHealth.waitingForSchedule.irizAppearance
         #expect(waiting.title == "Iriz is waiting")
         #expect(waiting.detail.contains("Not observing or listening"))
-        #expect(!waiting.breathes)
+        #expect(!waiting.rotates)
 
         let observing = CaptureHealth.observing.irizAppearance
         #expect(observing.title == "Iriz is observing")
         #expect(observing.detail.contains("right now"))
-        #expect(observing.breathes)
+        #expect(!observing.rotates)
     }
 
     @Test("Observe and Listen share one configuration with Pause as master override")
@@ -235,6 +235,21 @@ struct IrizCoreTests {
         #expect(!ScreenCaptureService.shouldAttemptCapture(settings: settings, permission: .notDetermined))
         #expect(!ScreenCaptureService.shouldAttemptCapture(settings: settings, permission: .denied))
         #expect(ScreenCaptureService.shouldAttemptCapture(settings: settings, permission: .granted))
+        #expect(!ScreenCaptureService.shouldAttemptCapture(
+            settings: settings,
+            permission: .granted,
+            accessibilityPermission: .notDetermined
+        ))
+        #expect(!ScreenCaptureService.shouldAttemptCapture(
+            settings: settings,
+            permission: .granted,
+            accessibilityPermission: .denied
+        ))
+        #expect(ScreenCaptureService.shouldAttemptCapture(
+            settings: settings,
+            permission: .granted,
+            accessibilityPermission: .granted
+        ))
     }
 
     @Test("Accessibility context never inspects Iriz or excluded applications")

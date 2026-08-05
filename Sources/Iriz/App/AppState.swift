@@ -32,6 +32,7 @@ final class AppState: ObservableObject {
     @Published private(set) var selectedAssistantConversationID: UUID?
     @Published private(set) var pendingAssistantTurn: PendingAssistantTurn?
     @Published private(set) var captureHealth: CaptureHealth = .paused
+    @Published private(set) var indicatorSnapshot = IndicatorActivitySnapshot()
     @Published private(set) var pendingCount = 0
     @Published private(set) var latestInsight: ActivityEvent?
     @Published private(set) var storageError: String?
@@ -48,6 +49,7 @@ final class AppState: ObservableObject {
     private var repository: EncryptedSQLiteStore?
     private var mediaStore: EncryptedMediaStore?
     private var searchService: LocalSearchService?
+    let indicatorActivities: IndicatorActivityStore
     private let ai: any AIProviding
     private let screenCapture = ScreenCaptureService()
     private let audioCapture = AudioCaptureService()
@@ -58,14 +60,33 @@ final class AppState: ObservableObject {
     private var maintenanceTask: Task<Void, Never>?
     private var lastScreenJPEG: Data?
     private var lastScreenContext: ActiveContext?
+    private var screenCaptureFailureMessage: String?
+    private var audioCaptureFailureMessage: String?
     private var isComposingNewAssistantConversation = false
+    private var indicatorSnapshotCancellable: AnyCancellable?
+    private var apiKeyStateCancellable: AnyCancellable?
 
-    init(ai: any AIProviding = OpenAIClient()) {
-        self.ai = ai
+    init(
+        ai: (any AIProviding)? = nil,
+        indicatorActivities: IndicatorActivityStore? = nil
+    ) {
+        let activityStore = indicatorActivities ?? IndicatorActivityStore()
+        self.indicatorActivities = activityStore
+        self.ai = ai ?? OpenAIClient(indicatorActivities: activityStore)
         self.repository = nil
         self.mediaStore = nil
         self.searchService = nil
         self.storageError = nil
+        self.indicatorSnapshot = activityStore.snapshot
+        self.indicatorSnapshotCancellable = activityStore.$snapshot.sink { [weak self] snapshot in
+            self?.indicatorSnapshot = snapshot
+        }
+        self.apiKeyStateCancellable = settingsStore.$apiKeyState
+            .dropFirst()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.captureHealth = self.configuredCaptureHealth
+            }
 
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.sessionDidResignActiveNotification,
@@ -102,6 +123,12 @@ final class AppState: ObservableObject {
         await screenCapture.start(
             settingsProvider: { @Sendable in
                 await MainActor.run { SettingsStore.shared.settings }
+            },
+            visibilityHandler: { @Sendable visibility in
+                await AppState.shared.updateScreenVisibility(visibility)
+            },
+            failureHandler: { @Sendable message in
+                await AppState.shared.updateScreenCaptureFailure(message)
             },
             handler: { @Sendable frame in
                 await AppState.shared.processScreenFrame(frame)
@@ -176,8 +203,10 @@ final class AppState: ObservableObject {
         } catch {
             if let keychainError = error as? KeychainStoreError, keychainError.requiresUserApproval {
                 settingsStore.setAPIKeyState(.needsApproval)
+                captureHealth = .permissionNeeded("Keychain access")
             } else {
                 settingsStore.setAPIKeyState(.invalid(error.localizedDescription))
+                captureHealth = .error("Keychain access needs attention.")
             }
         }
     }
@@ -337,17 +366,17 @@ final class AppState: ObservableObject {
         }
         settingsStore.settings.isPaused = paused
         if paused {
-            captureHealth = .paused
             audioCapture.stop()
+            Task { await systemAudioCapture.stop() }
         } else {
             guard secureStorageState == .ready else {
                 captureHealth = .permissionNeeded("Keychain access")
                 return
             }
-            captureHealth = configuredCaptureHealth
             configureAudio()
             Task { await retryPending() }
         }
+        captureHealth = configuredCaptureHealth
     }
 
     func pause() { setPaused(true) }
@@ -403,14 +432,14 @@ final class AppState: ObservableObject {
 
     func setObserveEnabled(_ enabled: Bool) {
         settingsStore.settings.setObserveEnabled(enabled)
-        if settingsStore.settings.isPaused { captureHealth = .paused }
+        if settingsStore.settings.isPaused { captureHealth = configuredCaptureHealth }
         guard !settingsStore.settings.isPaused else { return }
         configureAudio()
     }
 
     func setListenEnabled(_ enabled: Bool) {
         settingsStore.settings.setListenEnabled(enabled)
-        if settingsStore.settings.isPaused { captureHealth = .paused }
+        if settingsStore.settings.isPaused { captureHealth = configuredCaptureHealth }
         configureAudio()
     }
 
@@ -428,23 +457,28 @@ final class AppState: ObservableObject {
         guard secureStorageState == .ready else {
             audioCapture.stop()
             Task { await systemAudioCapture.stop() }
-            captureHealth = .permissionNeeded("Keychain access")
+            captureHealth = configuredCaptureHealth
             return
         }
         guard settingsStore.settings.isAudioActiveNow else {
             audioCapture.stop()
             Task { await systemAudioCapture.stop() }
-            if !settingsStore.settings.isPaused { captureHealth = configuredCaptureHealth }
+            audioCaptureFailureMessage = nil
+            captureHealth = configuredCaptureHealth
             return
         }
         guard PermissionService.microphoneState() == .granted else {
-            captureHealth = .permissionNeeded("Microphone")
+            audioCapture.stop()
+            Task { await systemAudioCapture.stop() }
+            audioCaptureFailureMessage = nil
+            captureHealth = configuredCaptureHealth
             return
         }
         do {
             try audioCapture.start { @Sendable wavData, duration in
                 await AppState.shared.processAudio(wavData, voicedDuration: duration)
             }
+            audioCaptureFailureMessage = nil
             captureHealth = configuredCaptureHealth
             if settingsStore.settings.meetingDetectionEnabled, lastScreenContext?.isMeeting == true {
                 Task {
@@ -456,13 +490,40 @@ final class AppState: ObservableObject {
                 Task { await systemAudioCapture.stop() }
             }
         } catch {
-            captureHealth = .error(error.localizedDescription)
+            audioCaptureFailureMessage = "Microphone observation is unavailable."
+            captureHealth = configuredCaptureHealth
         }
+    }
+
+    func updateScreenVisibility(_ visibility: ScreenContextVisibility) {
+        indicatorActivities.setScreenVisibility(visibility)
+        if visibility != .available {
+            // Never let a previously available app/window become fallback metadata
+            // after the active context turns private or unavailable.
+            lastScreenContext = nil
+            lastScreenJPEG = nil
+            Task { await systemAudioCapture.stop() }
+        }
+        captureHealth = configuredCaptureHealth
+    }
+
+    func updateScreenCaptureFailure(_ message: String?) {
+        guard screenCaptureFailureMessage != message else { return }
+        screenCaptureFailureMessage = message
+        captureHealth = configuredCaptureHealth
     }
 
     func processScreenFrame(_ frame: CapturedScreenFrame) async {
         guard !settingsStore.settings.isPaused, let repository, let mediaStore else { return }
-        captureHealth = frame.context.isMeeting ? .meeting : .processing
+        let activityContext: IndicatorActivityContext = frame.context.isMeeting ? .meeting : .screen
+        let activityToken = indicatorActivities.beginLocal(
+            IndicatorLocalActivityDescriptor(context: activityContext, startedAt: frame.capturedAt)
+        )
+        defer { indicatorActivities.finishLocal(activityToken) }
+        indicatorActivities.setScreenVisibility(.available)
+        if !hasPersistentIndicatorIssue {
+            captureHealth = frame.context.isMeeting ? .meeting : configuredCaptureHealth
+        }
         lastScreenJPEG = frame.jpegData
         lastScreenContext = frame.context
         do {
@@ -487,9 +548,9 @@ final class AppState: ObservableObject {
             pendingCount += 1
             await analyze(observation: observation, mediaData: frame.jpegData)
         } catch {
-            captureHealth = .error(error.localizedDescription)
+            handleProcessingError(error, context: activityContext)
         }
-        if !settingsStore.settings.isPaused {
+        if !settingsStore.settings.isPaused, !hasPersistentIndicatorIssue {
             captureHealth = configuredCaptureHealth
         }
     }
@@ -510,6 +571,11 @@ final class AppState: ObservableObject {
             return
         }
         guard let repository, let mediaStore else { return }
+        let activityContext: IndicatorActivityContext = lastScreenContext?.isMeeting == true ? .meeting : .voice
+        let activityToken = indicatorActivities.beginLocal(
+            IndicatorLocalActivityDescriptor(context: activityContext)
+        )
+        defer { indicatorActivities.finishLocal(activityToken) }
         let now = Date()
         let expiresAt = now.addingTimeInterval(TimeInterval(settingsStore.settings.mediaRetentionHours * 3_600))
         do {
@@ -528,7 +594,6 @@ final class AppState: ObservableObject {
             try await repository.saveObservation(observation)
             pendingCount += 1
             guard let key = try settingsStore.apiKey() else { return }
-            captureHealth = .processing
             let transcript = try await ai.transcribe(
                 wavData: wavData,
                 diarize: observation.isMeeting,
@@ -540,12 +605,19 @@ final class AppState: ObservableObject {
             try await repository.saveObservation(observation)
             await analyze(observation: observation, mediaData: nil)
         } catch {
-            captureHealth = .error(error.localizedDescription)
+            handleProcessingError(error, context: activityContext)
+        }
+        if !settingsStore.settings.isPaused, !hasPersistentIndicatorIssue {
+            captureHealth = configuredCaptureHealth
         }
     }
 
     func processSystemAudio(_ wavData: Data, voicedDuration: TimeInterval) async {
         guard voicedDuration > 0, let repository, let mediaStore else { return }
+        let activityToken = indicatorActivities.beginLocal(
+            IndicatorLocalActivityDescriptor(context: .meeting)
+        )
+        defer { indicatorActivities.finishLocal(activityToken) }
         let now = Date()
         let expiresAt = now.addingTimeInterval(TimeInterval(settingsStore.settings.mediaRetentionHours * 3_600))
         do {
@@ -574,7 +646,10 @@ final class AppState: ObservableObject {
             try await repository.saveObservation(observation)
             await analyze(observation: observation, mediaData: nil)
         } catch {
-            captureHealth = .error(error.localizedDescription)
+            handleProcessingError(error, context: .meeting)
+        }
+        if !settingsStore.settings.isPaused, !hasPersistentIndicatorIssue {
+            captureHealth = configuredCaptureHealth
         }
     }
 
@@ -604,7 +679,7 @@ final class AppState: ObservableObject {
                 }
             }
         } catch {
-            captureHealth = .error(error.localizedDescription)
+            handleProcessingError(error, context: .followUp)
         }
     }
 
@@ -747,6 +822,7 @@ final class AppState: ObservableObject {
                 answer = AssistantAnswer(question: trimmed, text: "No matching evidence was found.", citations: [])
             }
         } catch {
+            handleProcessingError(error, context: .assistant)
             answer = AssistantAnswer(question: trimmed, text: error.localizedDescription, citations: [])
         }
 
@@ -883,6 +959,7 @@ final class AppState: ObservableObject {
             followUpOperationMessage = nil
             await refresh()
         } catch {
+            handleProcessingError(error, context: .followUp)
             followUpOperationMessage = error.localizedDescription
         }
     }
@@ -1302,6 +1379,9 @@ final class AppState: ObservableObject {
                 occurredAt: now
             ))
             try await repository.replaceCommitments(with: merged, deletingSourceIDs: participatingIDs)
+            if FollowUpIndicatorOutcomePolicy.shouldHighlight(previous: target, updated: merged, source: .iriz) {
+                indicatorActivities.emitSuccess(context: .followUp)
+            }
             followUpOperationMessage = nil
             await refresh()
         } catch {
@@ -1405,9 +1485,27 @@ final class AppState: ObservableObject {
             try await ai.validateAPIKey(candidate)
             try settingsStore.saveAPIKey(candidate)
             settingsStore.setAPIKeyState(.valid)
+            if secureStorageState == .ready {
+                captureHealth = configuredCaptureHealth
+            }
             await retryPending()
         } catch {
-            settingsStore.setAPIKeyState(.invalid(error.localizedDescription))
+            if let clientError = error as? OpenAIClientError, clientError.isInvalidCredential {
+                settingsStore.setAPIKeyState(.invalid(clientError.localizedDescription))
+            } else if let keychainError = error as? KeychainStoreError {
+                settingsStore.setAPIKeyState(
+                    keychainError.requiresUserApproval
+                        ? .needsApproval
+                        : .invalid(keychainError.localizedDescription)
+                )
+            } else {
+                let previousState: APIKeyState = (try? settingsStore.apiKey()) == nil ? .missing : .saved
+                settingsStore.setAPIKeyState(previousState)
+            }
+            if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
+                indicatorActivities.emitAPIFailure(context: .credentials)
+            }
+            captureHealth = configuredCaptureHealth
         }
     }
 
@@ -1441,6 +1539,7 @@ final class AppState: ObservableObject {
         guard let repository else { return }
         do {
             guard let key = try settingsStore.apiKey() else { return }
+            var shouldHighlightFollowUp = false
             // Keep one immutable creation policy for the entire request. If the
             // user changes the menu while the network call is in flight, the
             // returned tiles still retain the level that shaped their creation.
@@ -1486,11 +1585,16 @@ final class AppState: ObservableObject {
                     || !interpretation.commitments.isEmpty)
                 let consolidated: ActivityEvent
                 if shouldRefine {
-                    consolidated = (try? await ai.refine(
-                        event: localConsolidation,
-                        outputLanguage: settingsStore.outputLanguagePrompt(),
-                        apiKey: key
-                    )) ?? localConsolidation
+                    do {
+                        consolidated = try await ai.refine(
+                            event: localConsolidation,
+                            outputLanguage: settingsStore.outputLanguagePrompt(),
+                            apiKey: key
+                        )
+                    } catch {
+                        handleProcessingError(error, context: Self.indicatorContext(for: observation))
+                        consolidated = localConsolidation
+                    }
                 } else {
                     consolidated = localConsolidation
                 }
@@ -1508,6 +1612,11 @@ final class AppState: ObservableObject {
                 for existing in locallyRelated {
                     if let linked = CommitmentLinker.linking(existing, to: consolidated) {
                         try await repository.saveCommitment(linked)
+                        shouldHighlightFollowUp = shouldHighlightFollowUp || FollowUpIndicatorOutcomePolicy.shouldHighlight(
+                            previous: existing,
+                            updated: linked,
+                            source: .iriz
+                        )
                         if let index = openCommitments.firstIndex(where: { $0.id == linked.id }) {
                             openCommitments[index] = linked
                         }
@@ -1519,6 +1628,7 @@ final class AppState: ObservableObject {
                        let existingID = draft.existingCommitmentID,
                        allowedCandidateIDs.contains(existingID),
                        let index = openCommitments.firstIndex(where: { $0.id == existingID }) {
+                        let previous = openCommitments[index]
                         var updated = CommitmentLinker.applyingNonDestructiveTextUpdate(
                             draft,
                             to: openCommitments[index]
@@ -1585,6 +1695,11 @@ final class AppState: ObservableObject {
                             ))
                         }
                         try await repository.saveCommitment(updated)
+                        shouldHighlightFollowUp = shouldHighlightFollowUp || FollowUpIndicatorOutcomePolicy.shouldHighlight(
+                            previous: previous,
+                            updated: updated,
+                            source: .iriz
+                        )
                         openCommitments[index] = updated
                         continue
                     }
@@ -1643,6 +1758,11 @@ final class AppState: ObservableObject {
                         )]
                     )
                     try await repository.saveCommitment(proposed)
+                    shouldHighlightFollowUp = shouldHighlightFollowUp || FollowUpIndicatorOutcomePolicy.shouldHighlight(
+                        previous: nil,
+                        updated: proposed,
+                        source: .iriz
+                    )
                     if let index = openCommitments.firstIndex(where: { $0.id == proposed.id }) {
                         openCommitments[index] = proposed
                     } else {
@@ -1650,13 +1770,16 @@ final class AppState: ObservableObject {
                     }
                 }
                 if consolidated.importance >= .important { latestInsight = consolidated }
+                if shouldHighlightFollowUp {
+                    indicatorActivities.emitSuccess(context: .followUp)
+                }
             }
             try await repository.markObservationProcessed(id: observation.id, at: Date())
             pendingCount = max(0, pendingCount - 1)
             await refresh()
         } catch {
             // The encrypted observation remains pending and can be retried until its 24-hour expiry.
-            captureHealth = .error(error.localizedDescription)
+            handleProcessingError(error, context: Self.indicatorContext(for: observation))
         }
     }
 
@@ -1697,16 +1820,55 @@ final class AppState: ObservableObject {
         }
     }
 
+    private var hasPersistentIndicatorIssue: Bool {
+        switch configuredCaptureHealth {
+        case .permissionNeeded, .error: true
+        case .paused, .observing, .listening, .observingAndListening, .waitingForSchedule,
+             .meeting, .meetingAndListening, .processing: false
+        }
+    }
+
+    private func handleProcessingError(_ error: Error, context: IndicatorActivityContext) {
+        if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+        if let clientError = error as? OpenAIClientError {
+            if clientError.isInvalidCredential {
+                settingsStore.setAPIKeyState(.invalid(clientError.localizedDescription))
+                captureHealth = .error("OpenAI credentials need attention.")
+            } else {
+                indicatorActivities.emitAPIFailure(context: context)
+            }
+            return
+        }
+        if error is URLError {
+            indicatorActivities.emitAPIFailure(context: context)
+            return
+        }
+        captureHealth = .error(error.localizedDescription)
+    }
+
+    private static func indicatorContext(for observation: Observation) -> IndicatorActivityContext {
+        if observation.isMeeting { return .meeting }
+        return switch observation.source {
+        case .screen: .screen
+        case .ambientAudio: .voice
+        case .meetingMicrophone, .meetingSystemAudio: .meeting
+        case .manualNote: .followUp
+        }
+    }
+
     private var configuredCaptureHealth: CaptureHealth {
-        let configured = settingsStore.settings
-        guard !configured.isPaused else { return .paused }
-        if configured.captureTiming == .schedule, !configured.isCaptureWindowActive(at: Date()) {
-            return (configured.screenCaptureEnabled || configured.isListenEnabled) ? .waitingForSchedule : .paused
-        }
-        if configured.isAudioActiveNow {
-            return configured.isScreenCaptureActiveNow ? .observingAndListening : .listening
-        }
-        if configured.isScreenCaptureActiveNow { return .observing }
-        return .paused
+        CaptureHealthResolver.resolve(CaptureHealthInputs(
+            settings: settingsStore.settings,
+            secureStorageState: secureStorageState,
+            apiKeyState: settingsStore.apiKeyState,
+            screenPermission: PermissionService.screenCaptureState(),
+            accessibilityPermission: PermissionService.accessibilityState(),
+            microphonePermission: PermissionService.microphoneState(),
+            screenFailureMessage: screenCaptureFailureMessage,
+            audioFailureMessage: audioCaptureFailureMessage,
+            screenVisibility: indicatorSnapshot.screenVisibility,
+            meetingContextDetected: lastScreenContext?.isMeeting == true,
+            now: Date()
+        ))
     }
 }

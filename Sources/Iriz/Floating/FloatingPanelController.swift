@@ -27,14 +27,7 @@ final class FloatingCapsuleModel: ObservableObject {
             openTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(120))
                 guard !Task.isCancelled, let self, self.isPointerInside, !self.isDragging else { return }
-                isExpanded = true
-                resize?(true)
-                actionsTask?.cancel()
-                actionsTask = Task { [weak self] in
-                    try? await Task.sleep(for: .milliseconds(240))
-                    guard !Task.isCancelled else { return }
-                    self?.actionsEnabled = true
-                }
+                expand()
             }
         } else {
             closeTask = Task { [weak self] in
@@ -45,6 +38,23 @@ final class FloatingCapsuleModel: ObservableObject {
                 self.isExpanded = false
                 self.resize?(false)
             }
+        }
+    }
+
+    func expand() {
+        guard !isDragging else { return }
+        openTask?.cancel()
+        openTask = nil
+        closeTask?.cancel()
+        closeTask = nil
+        guard !isExpanded else { return }
+        isExpanded = true
+        resize?(true)
+        actionsTask?.cancel()
+        actionsTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(240))
+            guard !Task.isCancelled else { return }
+            self?.actionsEnabled = true
         }
     }
 
@@ -99,7 +109,10 @@ final class FloatingPanelController {
     private var dragStartMouse: NSPoint?
     private var dragStartOrigin: NSPoint?
     private var dockEdge: DockEdge = .left
-    private let collapsed = NSSize(width: 52, height: 52)
+    private let collapsed = NSSize(
+        width: IrizIndicatorMetrics.collapsedPanelSize,
+        height: IrizIndicatorMetrics.collapsedPanelSize
+    )
     private let expanded = NSSize(
         width: ObservationControlMetrics.floatingWidth,
         height: ObservationControlMetrics.cardHeight

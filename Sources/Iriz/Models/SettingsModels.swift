@@ -360,6 +360,7 @@ enum CaptureHealth: Equatable, Sendable {
     case observingAndListening
     case waitingForSchedule
     case meeting
+    case meetingAndListening
     case processing
     case permissionNeeded(String)
     case error(String)
@@ -372,6 +373,7 @@ enum CaptureHealth: Equatable, Sendable {
         case .observingAndListening: "Observing + listening"
         case .waitingForSchedule: "Waiting"
         case .meeting: "Meeting"
+        case .meetingAndListening: "Meeting + listening"
         case .processing: "Processing"
         case .permissionNeeded: "Permission needed"
         case .error: "Needs attention"
@@ -382,6 +384,7 @@ enum CaptureHealth: Equatable, Sendable {
 enum MainSection: String, CaseIterable, Identifiable, Sendable {
     case assistant = "Ask Iriz"
     case followUp = "Follow Up"
+    case howIrizWorks = "How Iriz Works"
     case settings = "Settings"
 
     var id: String { rawValue }
@@ -390,6 +393,7 @@ enum MainSection: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .followUp: "checklist"
         case .assistant: "sparkles"
+        case .howIrizWorks: "questionmark.circle"
         case .settings: "gearshape"
         }
     }

@@ -1,5 +1,7 @@
 import Foundation
 
+typealias OpenAIDataLoader = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
 enum OpenAIReasoningEffort: String, Sendable {
     case none
     case low
@@ -10,9 +12,10 @@ struct OpenAIModelConfiguration: Equatable, Sendable {
     let model: String
     let reasoningEffort: OpenAIReasoningEffort
     let maxOutputTokens: Int
+    let activityLevel: IndicatorAPILevel
 }
 
-enum OpenAITask: Sendable {
+enum OpenAITask: String, CaseIterable, Equatable, Sendable {
     case credentialValidation
     case observationClassification
     case eventConsolidation
@@ -30,21 +33,76 @@ enum OpenAIModelPolicy {
     static func configuration(for task: OpenAITask) -> OpenAIModelConfiguration {
         switch task {
         case .credentialValidation:
-            OpenAIModelConfiguration(model: frequentAnalysis, reasoningEffort: .none, maxOutputTokens: 8)
+            OpenAIModelConfiguration(
+                model: frequentAnalysis,
+                reasoningEffort: .none,
+                maxOutputTokens: 8,
+                activityLevel: .routine
+            )
         case .observationClassification:
-            OpenAIModelConfiguration(model: frequentAnalysis, reasoningEffort: .none, maxOutputTokens: 2_400)
+            OpenAIModelConfiguration(
+                model: frequentAnalysis,
+                reasoningEffort: .none,
+                maxOutputTokens: 2_400,
+                activityLevel: .routine
+            )
         case .eventConsolidation, .followUpMerge:
-            OpenAIModelConfiguration(model: consolidation, reasoningEffort: .low, maxOutputTokens: 1_400)
+            OpenAIModelConfiguration(
+                model: consolidation,
+                reasoningEffort: .low,
+                maxOutputTokens: 1_400,
+                activityLevel: .intensive
+            )
         case .assistantAnswer:
-            OpenAIModelConfiguration(model: consolidation, reasoningEffort: .low, maxOutputTokens: 1_200)
+            OpenAIModelConfiguration(
+                model: consolidation,
+                reasoningEffort: .low,
+                maxOutputTokens: 1_200,
+                activityLevel: .intensive
+            )
         case .complexAssistantAnswer:
-            OpenAIModelConfiguration(model: consolidation, reasoningEffort: .medium, maxOutputTokens: 1_600)
+            OpenAIModelConfiguration(
+                model: consolidation,
+                reasoningEffort: .medium,
+                maxOutputTokens: 1_600,
+                activityLevel: .intensive
+            )
         }
     }
 
     static func assistantConfiguration(question: String, candidateCount: Int) -> OpenAIModelConfiguration {
         let isComplex = candidateCount > 12 || question.count > 280
         return configuration(for: isComplex ? .complexAssistantAnswer : .assistantAnswer)
+    }
+
+    static func indicatorDescriptor(
+        for task: OpenAITask,
+        context: IndicatorActivityContext,
+        indicatorTask: IndicatorAPITask,
+        startedAt: Date = Date()
+    ) -> IndicatorAPIActivityDescriptor {
+        let configuration = configuration(for: task)
+        return IndicatorAPIActivityDescriptor(
+            task: indicatorTask,
+            model: configuration.model,
+            level: configuration.activityLevel,
+            context: context,
+            startedAt: startedAt
+        )
+    }
+
+    static func transcriptionDescriptor(
+        diarize: Bool,
+        context: IndicatorActivityContext,
+        startedAt: Date = Date()
+    ) -> IndicatorAPIActivityDescriptor {
+        IndicatorAPIActivityDescriptor(
+            task: diarize ? .diarizedTranscription : .transcription,
+            model: diarize ? diarizedTranscription : transcription,
+            level: .speech,
+            context: context,
+            startedAt: startedAt
+        )
     }
 }
 
@@ -61,6 +119,11 @@ enum OpenAIClientError: LocalizedError, Equatable {
         case .requestFailed(let status, let message): "OpenAI request failed (\(status)): \(message)"
         case .malformedStructuredOutput: "OpenAI returned an event that did not match the Iriz format."
         }
+    }
+
+    var isInvalidCredential: Bool {
+        guard case .requestFailed(let status, _) = self else { return false }
+        return status == 401 || status == 403
     }
 }
 
@@ -104,17 +167,31 @@ protocol AIProviding: Sendable {
 }
 
 actor OpenAIClient: AIProviding {
-    private let session: URLSession
     private let baseURL: URL
+    private let indicatorActivities: IndicatorActivityStore?
+    private let dataLoader: OpenAIDataLoader
 
-    init(session: URLSession = .shared, baseURL: URL = URL(string: "https://api.openai.com/v1")!) {
-        self.session = session
+    init(
+        session: URLSession = .shared,
+        baseURL: URL = URL(string: "https://api.openai.com/v1")!,
+        indicatorActivities: IndicatorActivityStore? = nil,
+        dataLoader: OpenAIDataLoader? = nil
+    ) {
         self.baseURL = baseURL
+        self.indicatorActivities = indicatorActivities
+        self.dataLoader = dataLoader ?? { request in
+            try await session.data(for: request)
+        }
     }
 
     func validateAPIKey(_ apiKey: String) async throws {
         let data = try OpenAIRequestFactory.validationRequest()
-        _ = try await post(path: "responses", body: data, apiKey: apiKey)
+        let descriptor = OpenAIModelPolicy.indicatorDescriptor(
+            for: .credentialValidation,
+            context: .credentials,
+            indicatorTask: .credentialValidation
+        )
+        _ = try await post(path: "responses", body: data, apiKey: apiKey, activity: descriptor)
     }
 
     func interpret(
@@ -136,7 +213,13 @@ actor OpenAIClient: AIProviding {
             followUpCandidates: followUpCandidates,
             knownFollowUpSubjects: knownFollowUpSubjects
         )
-        var data = try await post(path: "responses", body: body, apiKey: apiKey)
+        let activityContext = Self.activityContext(for: observation)
+        let descriptor = OpenAIModelPolicy.indicatorDescriptor(
+            for: .observationClassification,
+            context: activityContext,
+            indicatorTask: .observationClassification
+        )
+        var data = try await post(path: "responses", body: body, apiKey: apiKey, activity: descriptor)
         var output = try Self.outputText(from: data)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -157,7 +240,17 @@ actor OpenAIClient: AIProviding {
                 knownFollowUpSubjects: knownFollowUpSubjects,
                 imageDetail: "original"
             )
-            data = try await post(path: "responses", body: detailedBody, apiKey: apiKey)
+            let detailedDescriptor = OpenAIModelPolicy.indicatorDescriptor(
+                for: .observationClassification,
+                context: activityContext,
+                indicatorTask: .originalImageAnalysis
+            )
+            data = try await post(
+                path: "responses",
+                body: detailedBody,
+                apiKey: apiKey,
+                activity: detailedDescriptor
+            )
             output = try Self.outputText(from: data)
             do {
                 draft = try decoder.decode(InterpretationPayload.self, from: Data(output.utf8))
@@ -245,7 +338,15 @@ actor OpenAIClient: AIProviding {
             conversationContext: conversationContext,
             outputLanguage: outputLanguage
         )
-        let data = try await post(path: "responses", body: body, apiKey: apiKey)
+        let task: OpenAITask = candidates.count > 12 || question.count > 280
+            ? .complexAssistantAnswer
+            : .assistantAnswer
+        let descriptor = OpenAIModelPolicy.indicatorDescriptor(
+            for: task,
+            context: .assistant,
+            indicatorTask: .assistantAnswer
+        )
+        let data = try await post(path: "responses", body: body, apiKey: apiKey, activity: descriptor)
         let output = try Self.outputText(from: data)
         let payload: AnswerPayload
         do {
@@ -267,7 +368,12 @@ actor OpenAIClient: AIProviding {
         apiKey: String
     ) async throws -> ActivityEvent {
         let body = try OpenAIRequestFactory.refinementRequest(event: event, outputLanguage: outputLanguage)
-        let data = try await post(path: "responses", body: body, apiKey: apiKey)
+        let descriptor = OpenAIModelPolicy.indicatorDescriptor(
+            for: .eventConsolidation,
+            context: .followUp,
+            indicatorTask: .eventRefinement
+        )
+        let data = try await post(path: "responses", body: body, apiKey: apiKey, activity: descriptor)
         let output = try Self.outputText(from: data)
         let payload: EventPayload
         do {
@@ -301,7 +407,12 @@ actor OpenAIClient: AIProviding {
             subject: subject,
             outputLanguage: outputLanguage
         )
-        let data = try await post(path: "responses", body: body, apiKey: apiKey)
+        let descriptor = OpenAIModelPolicy.indicatorDescriptor(
+            for: .followUpMerge,
+            context: .followUp,
+            indicatorTask: .followUpMerge
+        )
+        let data = try await post(path: "responses", body: body, apiKey: apiKey, activity: descriptor)
         let output = try Self.outputText(from: data)
         let payload: FollowUpMergePayload
         do {
@@ -348,7 +459,11 @@ actor OpenAIClient: AIProviding {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        let data = try await perform(request)
+        let descriptor = OpenAIModelPolicy.transcriptionDescriptor(
+            diarize: diarize,
+            context: diarize ? .meeting : .voice
+        )
+        let data = try await perform(request, activity: descriptor)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw OpenAIClientError.invalidResponse
         }
@@ -364,7 +479,12 @@ actor OpenAIClient: AIProviding {
         return text
     }
 
-    private func post(path: String, body: Data, apiKey: String) async throws -> Data {
+    private func post(
+        path: String,
+        body: Data,
+        apiKey: String,
+        activity: IndicatorAPIActivityDescriptor
+    ) async throws -> Data {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw OpenAIClientError.missingAPIKey }
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
@@ -372,17 +492,60 @@ actor OpenAIClient: AIProviding {
         request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        return try await perform(request)
+        return try await perform(request, activity: activity)
     }
 
-    private func perform(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw OpenAIClientError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else {
-            let message = Self.errorMessage(from: data) ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
-            throw OpenAIClientError.requestFailed(status: http.statusCode, message: message)
+    private func perform(
+        _ request: URLRequest,
+        activity: IndicatorAPIActivityDescriptor
+    ) async throws -> Data {
+        let token = await indicatorActivities?.beginAPI(activity)
+        var didFinishActivity = false
+        defer {
+            if !didFinishActivity, let token, let indicatorActivities {
+                Task { @MainActor in
+                    _ = indicatorActivities.finishAPI(token, completion: .cancelled)
+                }
+            }
         }
-        return data
+
+        do {
+            let (data, response) = try await dataLoader(request)
+            guard let http = response as? HTTPURLResponse else {
+                throw OpenAIClientError.invalidResponse
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                let message = Self.errorMessage(from: data)
+                    ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+                throw OpenAIClientError.requestFailed(status: http.statusCode, message: message)
+            }
+            if let token, let indicatorActivities {
+                _ = await indicatorActivities.finishAPI(token, completion: .success)
+            }
+            didFinishActivity = true
+            return data
+        } catch {
+            let completion: IndicatorAPICompletion = Self.isCancellation(error) ? .cancelled : .failure
+            if let token, let indicatorActivities {
+                _ = await indicatorActivities.finishAPI(token, completion: completion)
+            }
+            didFinishActivity = true
+            throw error
+        }
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+
+    private static func activityContext(for observation: Observation) -> IndicatorActivityContext {
+        if observation.isMeeting { return .meeting }
+        return switch observation.source {
+        case .screen: .screen
+        case .ambientAudio: .voice
+        case .meetingMicrophone, .meetingSystemAudio: .meeting
+        case .manualNote: .followUp
+        }
     }
 
     private static func outputText(from data: Data) throws -> String {

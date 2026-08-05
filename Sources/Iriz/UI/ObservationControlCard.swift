@@ -1,179 +1,9 @@
 import SwiftUI
 
-struct IrizStatusAppearance {
-    let title: String
-    let detail: String
-    let symbol: String
-    let tint: Color
-    let badge: String
-    let breathes: Bool
-    let breathingDuration: TimeInterval
-}
-
-extension CaptureHealth {
-    var irizAppearance: IrizStatusAppearance {
-        switch self {
-        case .paused:
-            IrizStatusAppearance(
-                title: "Iriz is paused",
-                detail: "Nothing is being captured.",
-                symbol: "moon.zzz.fill",
-                tint: .secondary,
-                badge: "PAUSED",
-                breathes: false,
-                breathingDuration: 2.8
-            )
-        case .observing:
-            IrizStatusAppearance(
-                title: "Iriz is observing",
-                detail: "The screen is active right now.",
-                symbol: "eye.fill",
-                tint: IrizTheme.observing,
-                badge: "LIVE",
-                breathes: true,
-                breathingDuration: 2.8
-            )
-        case .listening:
-            IrizStatusAppearance(
-                title: "Iriz is listening",
-                detail: "The microphone is active right now.",
-                symbol: "waveform",
-                tint: IrizTheme.listening,
-                badge: "LIVE",
-                breathes: true,
-                breathingDuration: 2.2
-            )
-        case .observingAndListening:
-            IrizStatusAppearance(
-                title: "Iriz is observing and listening",
-                detail: "Screen and microphone are active right now.",
-                symbol: "eye.fill",
-                tint: IrizTheme.observingAndListening,
-                badge: "LIVE",
-                breathes: true,
-                breathingDuration: 2.2
-            )
-        case .waitingForSchedule:
-            IrizStatusAppearance(
-                title: "Iriz is waiting",
-                detail: "Not observing or listening right now.",
-                symbol: "clock.fill",
-                tint: .secondary,
-                badge: "WAITING",
-                breathes: false,
-                breathingDuration: 2.8
-            )
-        case .meeting:
-            IrizStatusAppearance(
-                title: "Meeting detected",
-                detail: "Keeping context from this meeting.",
-                symbol: "person.2.fill",
-                tint: IrizTheme.coral,
-                badge: "MEETING",
-                breathes: true,
-                breathingDuration: 1.9
-            )
-        case .processing:
-            IrizStatusAppearance(
-                title: "A moment stood out",
-                detail: "Turning it into searchable memory.",
-                symbol: "sparkles",
-                tint: IrizTheme.processing,
-                badge: "SAVING",
-                breathes: true,
-                breathingDuration: 1.35
-            )
-        case .permissionNeeded(let permission):
-            IrizStatusAppearance(
-                title: "Permission needed",
-                detail: "Enable \(permission) to restore context.",
-                symbol: "lock.trianglebadge.exclamationmark.fill",
-                tint: IrizTheme.attention,
-                badge: "CHECK",
-                breathes: false,
-                breathingDuration: 2.8
-            )
-        case .error:
-            IrizStatusAppearance(
-                title: "Iriz needs attention",
-                detail: "Open Settings to review the issue.",
-                symbol: "exclamationmark.triangle.fill",
-                tint: IrizTheme.attention,
-                badge: "CHECK",
-                breathes: false,
-                breathingDuration: 2.8
-            )
-        }
-    }
-}
-
 enum ObservationControlMetrics {
     static let floatingWidth: CGFloat = 276
     static let sidebarWidth: CGFloat = floatingWidth + 24
     static let cardHeight: CGFloat = 313
-}
-
-struct IrizStatusLegendItem: Identifiable {
-    let id: String
-    let title: String
-    let detail: String
-    let tint: Color
-    let breathes: Bool
-}
-
-@MainActor
-enum IrizStatusLegend {
-    static var items: [IrizStatusLegendItem] {[
-        IrizStatusLegendItem(
-            id: "observe",
-            title: "Blue · Observing",
-            detail: "The screen is being observed now.",
-            tint: IrizTheme.observing,
-            breathes: true
-        ),
-        IrizStatusLegendItem(
-            id: "listen",
-            title: "Pink · Listening",
-            detail: "The microphone is active now.",
-            tint: IrizTheme.listening,
-            breathes: true
-        ),
-        IrizStatusLegendItem(
-            id: "both",
-            title: "Indigo · Observing and listening",
-            detail: "Both the screen and microphone are active now.",
-            tint: IrizTheme.observingAndListening,
-            breathes: true
-        ),
-        IrizStatusLegendItem(
-            id: "meeting",
-            title: "Coral · Meeting",
-            detail: "A supported meeting is currently detected.",
-            tint: IrizTheme.coral,
-            breathes: true
-        ),
-        IrizStatusLegendItem(
-            id: "processing",
-            title: "Amber · Saving a moment",
-            detail: "Iriz is turning useful evidence into searchable memory.",
-            tint: IrizTheme.processing,
-            breathes: true
-        ),
-        IrizStatusLegendItem(
-            id: "idle",
-            title: "Gray · Paused or waiting",
-            detail: "No screen or microphone capture is happening now.",
-            tint: .secondary,
-            breathes: false
-        ),
-        IrizStatusLegendItem(
-            id: "attention",
-            title: "Orange · Attention needed",
-            detail: "A permission or another issue needs review.",
-            tint: IrizTheme.attention,
-            breathes: false
-        )
-    ]}
 }
 
 struct ObservationChannelsControl: View {
@@ -224,7 +54,8 @@ struct ObservationChannelsControl: View {
         switch app.captureHealth {
         case .paused, .waitingForSchedule, .permissionNeeded, .error:
             false
-        case .observing, .listening, .observingAndListening, .meeting, .processing:
+        case .observing, .listening, .observingAndListening, .meeting,
+             .meetingAndListening, .processing:
             true
         }
     }
@@ -286,38 +117,6 @@ struct ObservationChannelsControl: View {
     }
 }
 
-struct IrizBreathingLogo: View {
-    @EnvironmentObject private var app: AppState
-    @State private var isBreathing = false
-    var size: CGFloat = 46
-
-    private var appearance: IrizStatusAppearance { app.captureHealth.irizAppearance }
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(appearance.tint.opacity(appearance.breathes ? (isBreathing ? 0.16 : 0.52) : 0.24), lineWidth: 1.6)
-                .scaleEffect(appearance.breathes && isBreathing ? 1.08 : 0.97)
-            IrizLogo(size: size, shape: .circle, castsShadow: false)
-        }
-        .frame(width: size + 4, height: size + 4)
-        .animation(
-            appearance.breathes
-                ? .easeInOut(duration: appearance.breathingDuration).repeatForever(autoreverses: true)
-                : .default,
-            value: isBreathing
-        )
-        .task(id: appearance.title) {
-            isBreathing = false
-            guard appearance.breathes else { return }
-            try? await Task.sleep(for: .milliseconds(40))
-            guard !Task.isCancelled else { return }
-            isBreathing = true
-        }
-        .accessibilityLabel("Iriz · \(appearance.title)")
-    }
-}
-
 struct ObservationControlCard: View {
     enum Placement {
         case sidebar
@@ -334,7 +133,7 @@ struct ObservationControlCard: View {
     var dragEnded: (() -> Void)?
     var interactionChanged: ((Bool) -> Void)?
 
-    private var appearance: IrizStatusAppearance { app.captureHealth.irizAppearance }
+    private var appearance: IndicatorPresentation { app.indicatorPresentation }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -358,7 +157,7 @@ struct ObservationControlCard: View {
                 .fill(IrizTheme.card)
                 .overlay {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(appearance.tint.opacity(appearance.breathes ? 0.075 : 0.025))
+                        .fill(appearance.tint.opacity(appearance.rotates ? 0.075 : 0.04))
                 }
         }
         .overlay {
@@ -404,7 +203,7 @@ struct ObservationControlCard: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
             HStack(spacing: 8) {
-                Color.clear.frame(width: 34, height: 1)
+                Color.clear.frame(width: 38, height: 1)
                 Text(appearance.detail)
                     .font(.system(size: 9.5))
                     .foregroundStyle(.secondary)
@@ -580,33 +379,12 @@ struct ObservationControlCard: View {
 }
 
 private struct StatusGlyph: View {
-    let appearance: IrizStatusAppearance
-    @State private var isBreathing = false
+    let appearance: IndicatorPresentation
 
     var body: some View {
-        ZStack {
-            Circle().fill(appearance.tint.opacity(0.14))
-            Circle()
-                .stroke(appearance.tint.opacity(appearance.breathes ? (isBreathing ? 0.14 : 0.42) : 0.24), lineWidth: 1.2)
-                .scaleEffect(appearance.breathes && isBreathing ? 1.13 : 0.98)
-            Image(systemName: appearance.symbol)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(appearance.tint)
-        }
-        .frame(width: 34, height: 34)
-        .animation(
-            appearance.breathes
-                ? .easeInOut(duration: appearance.breathingDuration).repeatForever(autoreverses: true)
-                : .default,
-            value: isBreathing
-        )
-        .task(id: appearance.title) {
-            isBreathing = false
-            guard appearance.breathes else { return }
-            try? await Task.sleep(for: .milliseconds(40))
-            guard !Task.isCancelled else { return }
-            isBreathing = true
-        }
+        IrizIndicatorView(presentation: appearance, logoSize: 28)
+        .frame(width: 38, height: 38)
+        .accessibilityHidden(true)
     }
 }
 

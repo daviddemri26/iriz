@@ -6,6 +6,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let app: AppState
     private let settings: SettingsStore
     private var statusItem: NSStatusItem?
+    private var previousPresentation: IndicatorPresentation?
     private var cancellables = Set<AnyCancellable>()
 
     init(app: AppState, settings: SettingsStore) {
@@ -21,9 +22,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             }
             .store(in: &cancellables)
 
-        app.$captureHealth
-            .sink { [weak self] _ in
-                self?.updateButtonDescription()
+        Publishers.CombineLatest(app.$captureHealth, app.$indicatorSnapshot)
+            .map { captureHealth, snapshot in
+                IndicatorPresentationResolver.resolve(
+                    captureHealth: captureHealth,
+                    snapshot: snapshot
+                )
+            }
+            .removeDuplicates()
+            .sink { [weak self] presentation in
+                self?.presentationDidChange(presentation)
             }
             .store(in: &cancellables)
     }
@@ -60,14 +68,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private func rebuildMenu(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        let status = NSMenuItem(title: app.captureHealth.irizAppearance.title, action: nil, keyEquivalent: "")
-        status.image = NSImage(systemSymbolName: app.captureHealth.irizAppearance.symbol, accessibilityDescription: nil)
+        let presentation = app.indicatorPresentation
+        let status = NSMenuItem(title: presentation.title, action: nil, keyEquivalent: "")
+        status.image = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: nil)
         status.isEnabled = false
         menu.addItem(status)
 
-        let detail = NSMenuItem(title: app.captureHealth.irizAppearance.detail, action: nil, keyEquivalent: "")
+        let detail = NSMenuItem(title: presentation.detail, action: nil, keyEquivalent: "")
         detail.isEnabled = false
         menu.addItem(detail)
+
+        if let modelName = presentation.modelName {
+            let model = NSMenuItem(title: "Model · \(modelName)", action: nil, keyEquivalent: "")
+            model.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: nil)
+            model.isEnabled = false
+            menu.addItem(model)
+        }
         menu.addItem(.separator())
 
         menu.addItem(actionItem(
@@ -103,7 +119,31 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     private func updateButtonDescription() {
-        statusItem?.button?.toolTip = "Iriz · \(app.captureHealth.displayName)"
+        updateButtonDescription(using: app.indicatorPresentation)
+    }
+
+    private func updateButtonDescription(using presentation: IndicatorPresentation) {
+        statusItem?.button?.toolTip = presentation.accessibilityLabel
+        statusItem?.button?.setAccessibilityLabel(presentation.accessibilityLabel)
+        statusItem?.button?.setAccessibilityHelp(presentation.detail)
+    }
+
+    private func presentationDidChange(_ presentation: IndicatorPresentation) {
+        updateButtonDescription(using: presentation)
+        let announcement = IndicatorAnnouncementPolicy.announcement(
+            previous: previousPresentation,
+            next: presentation
+        )
+        previousPresentation = presentation
+        guard let announcement, NSWorkspace.shared.isVoiceOverEnabled else { return }
+        NSAccessibility.post(
+            element: NSApp as Any,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: announcement,
+                .priority: NSAccessibilityPriorityLevel.medium.rawValue
+            ]
+        )
     }
 
     @objc private func togglePause() {
