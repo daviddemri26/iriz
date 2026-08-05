@@ -56,29 +56,29 @@ struct MainWindowView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                IrizLogo(size: 32)
-                Text("Iriz").font(.title2.weight(.bold))
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(primarySections) { section in
-                        primaryFeatureButton(for: section)
-                    }
-
-                    if !app.pinnedAssistantConversations.isEmpty {
-                        pinnedConversationSection
-                            .padding(.top, 3)
-                    }
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(primarySections) { section in
+                    primaryFeatureButton(for: section)
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 4)
             }
-            .scrollIndicators(.hidden)
-            .frame(maxHeight: .infinity)
+            .padding(.horizontal, 10)
+            .padding(.top, 16)
+
+            if app.pinnedAssistantConversations.isEmpty {
+                Spacer(minLength: 8)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(app.pinnedAssistantConversations) { conversation in
+                            pinnedConversationRow(conversation)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 2)
+                }
+                .scrollIndicators(.hidden)
+                .frame(maxHeight: .infinity)
+            }
 
             VStack(spacing: 5) {
                 sidebarButton(for: .howIrizWorks)
@@ -171,25 +171,6 @@ struct MainWindowView: View {
         .accessibilityLabel(section.rawValue)
         .accessibilityHint(subtitle)
         .accessibilityValue(isSelected ? "Selected" : "")
-    }
-
-    private var pinnedConversationSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "pin.fill")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(IrizTheme.violet)
-                Text("Pinned conversations")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 5)
-
-            ForEach(app.pinnedAssistantConversations) { conversation in
-                pinnedConversationRow(conversation)
-            }
-        }
     }
 
     private func pinnedConversationRow(_ conversation: AssistantConversation) -> some View {

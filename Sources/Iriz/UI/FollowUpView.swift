@@ -746,6 +746,11 @@ enum FollowUpTilePriorityBand: Equatable {
     case standard
 }
 
+enum FollowUpCompletionButtonStyle: Equatable {
+    case standard
+    case suggestedByIriz
+}
+
 enum FollowUpTilePresentation {
     static let tileHeight: CGFloat = 205
     static let scheduleSlotHeight: CGFloat = 24
@@ -762,6 +767,11 @@ enum FollowUpTilePresentation {
         case 7...8: .elevated
         default: .standard
         }
+    }
+
+    static func completionButtonStyle(for commitment: Commitment) -> FollowUpCompletionButtonStyle {
+        let hint = commitment.evidenceHint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return hint.isEmpty ? .standard : .suggestedByIriz
     }
 }
 
@@ -805,12 +815,6 @@ private struct FollowUpTile: View {
             HStack(alignment: .center, spacing: 7) {
                 subjectChip
                 Spacer(minLength: 5)
-                if commitment.evidenceHint != nil {
-                    Image(systemName: "sparkle.magnifyingglass")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .help("Iriz found supporting evidence")
-                }
                 exportMenu
             }
 
@@ -1053,13 +1057,21 @@ private struct FollowUpTile: View {
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(.white)
                         .frame(width: 36, height: 36)
-                        .background(IrizTheme.mint, in: Circle())
-                        .overlay(Circle().stroke(.white.opacity(0.20)))
-                        .shadow(color: IrizTheme.mint.opacity(0.26), radius: 6, y: 2)
+                        .background(completionButtonFill, in: Circle())
+                        .overlay(Circle().stroke(.white.opacity(completionButtonStyle == .suggestedByIriz ? 0.34 : 0.20)))
+                        .shadow(
+                            color: completionButtonStyle == .suggestedByIriz
+                                ? IrizTheme.listening.opacity(0.42)
+                                : IrizTheme.mint.opacity(0.26),
+                            radius: completionButtonStyle == .suggestedByIriz ? 8 : 6,
+                            y: 2
+                        )
                 }
                 .buttonStyle(.plain)
                 .contentShape(Circle())
-                .help("Done")
+                .help(completionButtonHelp)
+                .accessibilityLabel("Mark as done")
+                .accessibilityValue(completionButtonStyle == .suggestedByIriz ? "Suggested by Iriz" : "")
 
                 Menu {
                     Button("Tomorrow") {
@@ -1114,6 +1126,38 @@ private struct FollowUpTile: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Share or export")
+    }
+
+    private var completionButtonStyle: FollowUpCompletionButtonStyle {
+        FollowUpTilePresentation.completionButtonStyle(for: commitment)
+    }
+
+    private var completionButtonFill: AnyShapeStyle {
+        switch completionButtonStyle {
+        case .standard:
+            AnyShapeStyle(IrizTheme.mint)
+        case .suggestedByIriz:
+            AnyShapeStyle(
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.10, green: 0.62, blue: 0.40),
+                        Color(red: 0.24, green: 0.86, blue: 0.58),
+                        Color(red: 0.20, green: 0.74, blue: 0.78)
+                    ],
+                    startPoint: .bottomLeading,
+                    endPoint: .topTrailing
+                )
+            )
+        }
+    }
+
+    private var completionButtonHelp: String {
+        switch completionButtonStyle {
+        case .standard:
+            "Mark as done"
+        case .suggestedByIriz:
+            "Iriz found evidence that this may be done"
+        }
     }
 }
 

@@ -22,7 +22,7 @@ enum SecureStorageState: Equatable, Sendable {
 final class AppState: ObservableObject {
     static let shared = AppState()
 
-    @Published var selectedSection: MainSection = .assistant
+    @Published var selectedSection: MainSection = .initial
     @Published var selectedSettingsCategory: SettingsCategory = .capture
     @Published private(set) var events: [ActivityEvent] = []
     @Published private(set) var commitments: [Commitment] = []

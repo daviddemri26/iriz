@@ -22,7 +22,7 @@ enum IndicatorColorToken: String, Hashable, Sendable {
         case .privateContext: IrizTheme.privateContext
         case .observing: IrizTheme.observing
         case .listening: IrizTheme.listening
-        case .meeting: IrizTheme.coral
+        case .meeting: IrizTheme.meeting
         case .violet: IrizTheme.violet
         case .mint: IrizTheme.mint
         case .attention: IrizTheme.attention
@@ -55,14 +55,14 @@ struct IndicatorPalette: Equatable, Sendable {
     static let observing = IndicatorPalette([.observing])
     static let listening = IndicatorPalette([.listening])
     static let observingAndListening = IndicatorPalette([.observing, .listening])
-    static let meeting = IndicatorPalette([.observing, .meeting])
-    static let meetingAndListening = IndicatorPalette([.observing, .meeting, .listening])
+    static let meeting = IndicatorPalette([.meeting])
+    static let meetingAndListening = IndicatorPalette([.meeting, .listening])
     static let violet = IndicatorPalette([.violet])
     static let mint = IndicatorPalette([.mint])
     static let attention = IndicatorPalette([.attention])
     static let screenSignal = IndicatorPalette([.observing, .apiHighlight])
     static let voiceSignal = IndicatorPalette([.listening, .voiceSignalHighlight])
-    static let meetingSignal = IndicatorPalette([.observing, .meeting, .apiWarmHighlight])
+    static let meetingSignal = IndicatorPalette([.meeting, .apiWarmHighlight])
     static let violetSignal = IndicatorPalette([.violet, .apiHighlight])
     static let screenAPI = IndicatorPalette([.observing, .apiHighlight, .indigo])
     static let speechAPI = IndicatorPalette([.listening, .meeting, .violet])

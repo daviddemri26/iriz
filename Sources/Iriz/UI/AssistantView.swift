@@ -406,22 +406,11 @@ private struct AssistantMessage: View {
     @EnvironmentObject private var app: AppState
     let answer: AssistantAnswer
 
-    private var markdown: AttributedString {
-        (try? AttributedString(
-            markdown: answer.text,
-            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
-        )) ?? AttributedString(answer.text)
-    }
-
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
             IrizLogo(size: 30, shape: .circle, castsShadow: false)
             VStack(alignment: .leading, spacing: 14) {
-                Text(markdown)
-                    .font(.system(size: 16))
-                    .lineSpacing(6)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                AssistantMarkdownView(markdown: answer.text)
                 if !answer.citations.isEmpty {
                     VStack(alignment: .leading, spacing: 7) {
                         Text("Sources")

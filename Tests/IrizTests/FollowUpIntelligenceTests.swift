@@ -365,7 +365,22 @@ struct FollowUpIntelligenceTests {
         #expect(linked.lifecycle == .active)
         #expect(linked.completionEvidence?.strength == .weak)
         #expect(linked.evidenceHint?.contains("Camera document archived") == true)
+        #expect(FollowUpTilePresentation.completionButtonStyle(for: linked) == .suggestedByIriz)
         #expect(linked.history.last?.kind == .evidence)
+    }
+
+    @Test("Done button stays solid without a completion suggestion")
+    func standardCompletionButton() {
+        let item = commitment(
+            action: "Review the Atlas contract",
+            aiPriorityScore: 5,
+            surfacedAt: Date(timeIntervalSince1970: 8_500)
+        )
+
+        #expect(FollowUpTilePresentation.completionButtonStyle(for: item) == .standard)
+        var blankHint = item
+        blankHint.evidenceHint = "  \n"
+        #expect(FollowUpTilePresentation.completionButtonStyle(for: blankHint) == .standard)
     }
 
     @Test("Merge field resolution is deterministic and does not delete sources")

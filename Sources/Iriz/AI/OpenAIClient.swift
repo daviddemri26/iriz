@@ -688,6 +688,7 @@ enum OpenAIRequestFactory {
         let prompt = """
         Answer the user's question using only the candidate Iriz events below. Write in \(outputLanguage).
         Be conversational and precise. Use concise Markdown when it improves readability: short paragraphs, **bold** key facts, and compact lists.
+        Separate paragraphs, headings, and lists with blank lines. Never join a bold heading directly to the preceding or following sentence.
         Previous turns are conversational context for follow-up wording only; they are not evidence. Every factual claim must still be supported by a candidate event.
         If the evidence does not establish an action, say \"No matching evidence was found\".
         Include only IDs for events that directly support the answer. Never invent a URL, company, date, or action.

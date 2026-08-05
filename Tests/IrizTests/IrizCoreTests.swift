@@ -145,6 +145,45 @@ struct IrizCoreTests {
         #expect(title.count <= 55)
     }
 
+    @Test("Assistant Markdown preserves block structure and hard line breaks")
+    func assistantMarkdownDocument() {
+        let document = AssistantMarkdownDocument(markdown: """
+        Intro line.
+        Second line.
+
+        ## Decision
+
+        - Keep the paragraph break
+        - Preserve **bold** text
+
+        1. First step
+        2. Second step
+
+        > A quoted note
+
+        ```json
+        {"ready":true}
+        ```
+        """)
+
+        #expect(document.blocks == [
+            .paragraph("Intro line.\nSecond line."),
+            .heading(level: 2, text: "Decision"),
+            .unorderedList(["Keep the paragraph break", "Preserve **bold** text"]),
+            .orderedList([
+                .init(number: 1, text: "First step"),
+                .init(number: 2, text: "Second step")
+            ]),
+            .quote("A quoted note"),
+            .code("{\"ready\":true}")
+        ])
+    }
+
+    @Test("How Iriz Works is the initial main section")
+    func initialMainSection() {
+        #expect(MainSection.initial == .howIrizWorks)
+    }
+
     @Test("A viewed role is not a completed application")
     func applicationStates() {
         let viewed = Observation(
@@ -440,6 +479,7 @@ struct IrizCoreTests {
         #expect(input.contains("Previous question 2"))
         #expect(input.contains("Previous question 5"))
         #expect(input.contains("concise Markdown"))
+        #expect(input.contains("Separate paragraphs, headings, and lists with blank lines"))
     }
 
     @Test("Observation guidance applies detail level only to newly created follow-ups")

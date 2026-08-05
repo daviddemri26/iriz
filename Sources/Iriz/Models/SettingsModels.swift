@@ -387,6 +387,8 @@ enum MainSection: String, CaseIterable, Identifiable, Sendable {
     case howIrizWorks = "How Iriz Works"
     case settings = "Settings"
 
+    static let initial: MainSection = .howIrizWorks
+
     var id: String { rawValue }
 
     var symbolName: String {

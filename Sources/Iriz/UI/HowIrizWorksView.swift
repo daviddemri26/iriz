@@ -27,7 +27,6 @@ struct HowIrizWorksView: View {
             .frame(maxWidth: .infinity, alignment: .top)
         }
         .background(IrizTheme.canvas)
-        .navigationTitle("How Iriz Works")
         .onExitCommand(perform: returnToLive)
         .onChange(of: focusedScenarioID) { _, identifier in
             simulatorSelection.setFocused(identifier)
